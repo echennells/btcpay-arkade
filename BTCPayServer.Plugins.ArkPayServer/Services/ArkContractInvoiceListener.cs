@@ -26,6 +26,8 @@ public class ArkContractInvoiceListener(
     IMemoryCache memoryCache,
     InvoiceRepository invoiceRepository,
     ArkadePaymentMethodHandler arkadePaymentMethodHandler,
+    ArkadeAssetPaymentMethodHandler arkadeAssetPaymentMethodHandler,
+    AssetMetadataService assetMetadataService,
     IClientTransport clientTransport,
     EventAggregator eventAggregator,
     IContractStorage contractStorage,
@@ -89,20 +91,54 @@ public class ArkContractInvoiceListener(
             var script = Script.FromHex(vtxo.Script);
             var address = ArkAddress.FromScriptPubKey(script, serverKey);
             var network = terms.Network;
-            var inv = await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadePaymentMethodId, address.ToString(network.ChainName == ChainName.Mainnet));
-            if (inv is null)
-                return;
+            var addressStr = address.ToString(network.ChainName == ChainName.Mainnet);
 
-            // Map NNark's ArkVtxo to plugin's VtxoEntity entity
-            var vtxoEntity = new VtxoEntity
+            var hasAssets = vtxo.Assets is { Count: > 0 };
+
+            // With unified addresses, ARKADE and ARKADE_ASSET share the same address.
+            // Route based on whether the VTXO carries assets or just sats.
+
+            if (hasAssets)
             {
-                TransactionId = vtxo.TransactionId,
-                TransactionOutputIndex = (int)vtxo.TransactionOutputIndex,
-                Amount = (long)vtxo.Amount,
-                Script = vtxo.Script,
-                SeenAt = vtxo.CreatedAt
-            };
-            await HandlePaymentData(vtxoEntity, inv, arkadePaymentMethodHandler);
+                // Asset VTXO — check both ARKADE_ASSET and ARKADE registered addresses
+                // (they share the same address with unified invoices)
+                var assetInv = await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadeAssetPaymentMethodId, addressStr)
+                               ?? await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadePaymentMethodId, addressStr);
+                if (assetInv?.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId) != null)
+                {
+                    if (assetInv.Status != InvoiceStatus.New)
+                    {
+                        logger.LogInformation("Ignoring VTXO for invoice {InvoiceId} — status is {Status}, not New",
+                            assetInv.Id, assetInv.Status);
+                        return;
+                    }
+                    await HandleAssetPaymentData(vtxo, assetInv);
+                }
+            }
+            else
+            {
+                // Plain sats VTXO — check both ARKADE and ARKADE_ASSET registered addresses
+                var inv = await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadePaymentMethodId, addressStr)
+                          ?? await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadeAssetPaymentMethodId, addressStr);
+                if (inv?.GetPaymentPrompt(ArkadePlugin.ArkadePaymentMethodId) != null)
+                {
+                    if (inv.Status != InvoiceStatus.New)
+                    {
+                        logger.LogInformation("Ignoring VTXO for invoice {InvoiceId} — status is {Status}, not New",
+                            inv.Id, inv.Status);
+                        return;
+                    }
+                    var vtxoEntity = new VtxoEntity
+                    {
+                        TransactionId = vtxo.TransactionId,
+                        TransactionOutputIndex = (int)vtxo.TransactionOutputIndex,
+                        Amount = (long)vtxo.Amount,
+                        Script = vtxo.Script,
+                        SeenAt = vtxo.CreatedAt
+                    };
+                    await HandlePaymentData(vtxoEntity, inv, arkadePaymentMethodHandler);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -120,6 +156,70 @@ public class ArkContractInvoiceListener(
         return Task.CompletedTask;
     }
     
+    private async Task HandleAssetPaymentData(ArkVtxo vtxo, InvoiceEntity invoice)
+    {
+        // Get the expected asset from the invoice prompt
+        var prompt = invoice.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId);
+        if (prompt is null) return;
+
+        var promptDetails = arkadeAssetPaymentMethodHandler.ParsePaymentPromptDetails(prompt.Details);
+        var expectedAssetId = promptDetails.AssetId;
+
+        // Find the matching asset in the VTXO
+        var matchingAsset = vtxo.Assets?.FirstOrDefault(a => a.AssetId == expectedAssetId);
+        if (matchingAsset is null) return;
+
+        var outpoint = $"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}";
+        var details = new ArkadeAssetPaymentData(outpoint, matchingAsset.AssetId, (long)matchingAsset.Amount);
+
+        // Get asset metadata for proper decimal conversion
+        var metadata = await assetMetadataService.GetAssetMetadata(matchingAsset.AssetId);
+        var decimals = metadata?.Decimals ?? 0;
+        var displayAmount = decimals > 0
+            ? (decimal)matchingAsset.Amount / (decimal)Math.Pow(10, decimals)
+            : (decimal)matchingAsset.Amount;
+
+        await _paymentLock.WaitAsync();
+        try
+        {
+            var freshInvoice = await invoiceRepository.GetInvoice(invoice.Id);
+            if (freshInvoice is null) return;
+
+            var pmi = ArkadePlugin.ArkadeAssetPaymentMethodId;
+            var paymentData = new PaymentData
+            {
+                Status = PaymentStatus.Settled,
+                Amount = displayAmount,
+                Created = vtxo.CreatedAt,
+                Id = outpoint,
+                Currency = metadata?.Ticker ?? "ASSET",
+            }.Set(freshInvoice, arkadeAssetPaymentMethodHandler, details);
+
+            var existing = freshInvoice
+                .GetPayments(false)
+                .SingleOrDefault(c => c.Id == paymentData.Id && c.PaymentMethodId == pmi);
+
+            if (existing == null)
+            {
+                var payment = await paymentService.AddPayment(paymentData);
+                if (payment != null)
+                    await ReceivedPayment(freshInvoice, payment);
+            }
+            else
+            {
+                existing.Status = PaymentStatus.Settled;
+                existing.Details = JToken.FromObject(details, arkadeAssetPaymentMethodHandler.Serializer);
+                await paymentService.UpdatePayments([existing]);
+            }
+        }
+        finally
+        {
+            _paymentLock.Release();
+        }
+
+        eventAggregator.Publish(new InvoiceNeedUpdateEvent(invoice.Id));
+    }
+
     private async Task HandlePaymentData(VtxoEntity vtxo, InvoiceEntity invoice, ArkadePaymentMethodHandler handler)
     {
         var pmi = ArkadePlugin.ArkadePaymentMethodId;

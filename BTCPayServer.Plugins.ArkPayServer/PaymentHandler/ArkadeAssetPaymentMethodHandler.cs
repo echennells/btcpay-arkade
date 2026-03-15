@@ -1,0 +1,126 @@
+using BTCPayServer.Data;
+using BTCPayServer.Payments;
+using BTCPayServer.Plugins.ArkPayServer.Services;
+using BTCPayServer.Services;
+using NArk.Core;
+using NArk.Abstractions.Wallets;
+using NArk.Abstractions.Contracts;
+using NArk.Core.Services;
+using NArk.Core.Transport;
+using NBitcoin;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+namespace BTCPayServer.Plugins.ArkPayServer.PaymentHandler;
+
+public class ArkadeAssetPaymentMethodHandler(
+    BTCPayServerEnvironment btcPayServerEnvironment,
+    IContractService contractService,
+    IClientTransport clientTransport,
+    AssetMetadataService assetMetadataService
+) : IPaymentMethodHandler
+{
+    public PaymentMethodId PaymentMethodId => ArkadePlugin.ArkadeAssetPaymentMethodId;
+
+    public async Task ConfigurePrompt(PaymentMethodContext context)
+    {
+        try
+        {
+            await clientTransport.GetServerInfoAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        }
+        catch
+        {
+            throw new PaymentMethodUnavailableException("Ark operator unavailable");
+        }
+
+        var store = context.Store;
+        var configs = store.GetPaymentMethodConfigs();
+
+        // Asset config is stored under the BTC ARKADE payment method
+        if (!configs.TryGetValue(ArkadePlugin.ArkadePaymentMethodId, out var configToken))
+            throw new PaymentMethodUnavailableException("Arkade payment method not configured");
+
+        var arkadeConfig = configToken.ToObject<ArkadePaymentMethodConfig>(Serializer);
+        if (arkadeConfig is null)
+            throw new PaymentMethodUnavailableException("Arkade payment method not configured");
+
+        if (arkadeConfig.AcceptedAssets is not { Count: > 0 })
+            throw new PaymentMethodUnavailableException("No assets configured");
+
+        var acceptedAsset = arkadeConfig.AcceptedAssets[0];
+        var metadata = await assetMetadataService.GetAssetMetadata(acceptedAsset.AssetId);
+        var ticker = metadata?.Ticker ?? "ASSET";
+        var decimals = metadata?.Decimals ?? 0;
+
+        // Set the prompt currency to the asset ticker and inject a synthetic rate
+        // so that 1 unit of the asset always pays the full invoice.
+        // Rate = invoicePrice means: Calculate().Due = price / price = 1
+        context.Prompt.Currency = ticker;
+        context.Prompt.Divisibility = decimals;
+
+        var invoicePrice = context.InvoiceEntity.Price;
+        if (invoicePrice <= 0m)
+            throw new PaymentMethodUnavailableException("Invoice price must be positive for asset payment");
+
+#pragma warning disable CS0618
+        context.InvoiceEntity.Rates[ticker] = invoicePrice;
+#pragma warning restore CS0618
+
+        var contract = await contractService.DeriveContract(
+            arkadeConfig.WalletId,
+            NextContractPurpose.Receive,
+            metadata: new Dictionary<string, string> { ["Source"] = $"asset-invoice:{context.InvoiceEntity.Id}" },
+            cancellationToken: CancellationToken.None);
+
+        var details = new ArkadeAssetPromptDetails(arkadeConfig.WalletId, contract, acceptedAsset.AssetId);
+        var address = contract.GetArkAddress();
+
+        context.Prompt.Destination = address.ToString(btcPayServerEnvironment.NetworkType == ChainName.Mainnet);
+        context.Prompt.PaymentMethodFee = 0m;
+        context.Prompt.Details = JObject.FromObject(details, Serializer);
+
+        context.TrackedDestinations.Add(context.Prompt.Destination);
+        context.TrackedDestinations.Add(address.ScriptPubKey.PaymentScript.ToHex());
+    }
+
+    public Task BeforeFetchingRates(PaymentMethodContext context)
+    {
+        // Leave Prompt.Currency null here so BTCPay doesn't add the asset ticker
+        // to RequiredRates (which would fail since no exchange has rates for it).
+        // Currency and rate are injected later in ConfigurePrompt.
+        return Task.CompletedTask;
+    }
+
+    public JsonSerializer Serializer { get; } = BlobSerializer.CreateSerializer().Serializer;
+
+    public ArkadeAssetPromptDetails ParsePaymentPromptDetails(JToken details)
+    {
+        return details.ToObject<ArkadeAssetPromptDetails>(Serializer)!;
+    }
+
+    object IPaymentMethodHandler.ParsePaymentPromptDetails(JToken details)
+    {
+        return ParsePaymentPromptDetails(details);
+    }
+
+    public object ParsePaymentMethodConfig(JToken config)
+    {
+        return config.ToObject<ArkadePaymentMethodConfig>(Serializer) ??
+               throw new FormatException($"Invalid {nameof(ArkadeAssetPaymentMethodHandler)}");
+    }
+
+    public ArkadeAssetPaymentData ParsePaymentDetails(JToken details)
+    {
+        return details.ToObject<ArkadeAssetPaymentData>(Serializer) ??
+               throw new FormatException($"Invalid {nameof(ArkadeAssetPaymentData)}");
+    }
+
+    object IPaymentMethodHandler.ParsePaymentDetails(JToken details)
+    {
+        return ParsePaymentDetails(details);
+    }
+
+    public void StripDetailsForNonOwner(object details)
+    {
+    }
+}

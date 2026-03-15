@@ -64,4 +64,15 @@ public class StoreOverviewViewModel
     // Recent swaps
     public IReadOnlyCollection<ArkSwap> RecentSwaps { get; set; } = [];
     public int TotalSwapCount { get; set; }
+
+    // Accepted assets
+    public List<AcceptedAssetViewModel> AcceptedAssets { get; set; } = [];
+}
+
+public class AcceptedAssetViewModel
+{
+    public string AssetId { get; set; } = "";
+    public string? DisplayName { get; set; }
+    public string? Ticker { get; set; }
+    public int Decimals { get; set; }
 }

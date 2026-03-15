@@ -317,12 +317,27 @@ public class ArkController(
             // Silently ignore - swaps section will show empty
         }
 
+        // Build accepted assets list
+        var acceptedAssets = new List<AcceptedAssetViewModel>();
+        if (config!.AcceptedAssets is { Count: > 0 })
+        {
+            foreach (var asset in config.AcceptedAssets)
+            {
+                acceptedAssets.Add(new AcceptedAssetViewModel
+                {
+                    AssetId = asset.AssetId,
+                    DisplayName = asset.DisplayName,
+                });
+            }
+        }
+
         return View(new StoreOverviewViewModel
         {
             StoreId = store!.Id,
             IsDestinationSweepEnabled = destination is not null,
             IsLightningEnabled = IsArkadeLightningEnabled(),
             Balances = balances,
+            AcceptedAssets = acceptedAssets,
             WalletId = config.WalletId,
             Destination = destination,
             SignerAvailable = signerAvailable,
@@ -1897,6 +1912,95 @@ public class ArkController(
                 new { storeId });
         }
 
+        return RedirectToAction(nameof(StoreOverview), new { storeId });
+    }
+
+    [HttpPost("stores/{storeId}/add-asset")]
+    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
+    public async Task<IActionResult> AddAsset(string storeId, string assetId, CancellationToken cancellationToken = default)
+    {
+        var (store, config, errorResult) = await ValidateStoreAndConfig();
+        if (errorResult != null) return errorResult;
+
+        if (string.IsNullOrWhiteSpace(assetId))
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "Asset ID is required.";
+            return RedirectToAction(nameof(StoreOverview), new { storeId });
+        }
+
+        assetId = assetId.Trim();
+
+        var assets = config!.AcceptedAssets?.ToList() ?? new List<AcceptedAsset>();
+        if (assets.Any(a => a.AssetId == assetId))
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "Asset already added.";
+            return RedirectToAction(nameof(StoreOverview), new { storeId });
+        }
+
+        // Try to fetch metadata for display name
+        string? displayName = null;
+        try
+        {
+            var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
+            var details = await clientTransport.GetAssetDetailsAsync(assetId, cancellationToken);
+            if (details?.Metadata != null)
+            {
+                details.Metadata.TryGetValue("name", out var name);
+                details.Metadata.TryGetValue("ticker", out var ticker);
+                displayName = !string.IsNullOrEmpty(name) ? $"{name} ({ticker})" : ticker;
+            }
+        }
+        catch
+        {
+            // Asset metadata fetch failed, continue without display name
+        }
+
+        assets.Add(new AcceptedAsset(assetId, displayName));
+        var newConfig = config with { AcceptedAssets = assets };
+        store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
+
+        // Enable ARKADE_ASSET payment method on the store so it shows up on invoices
+        store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], newConfig);
+
+        await storeRepository.UpdateStore(store);
+
+        TempData[WellKnownTempData.SuccessMessage] = $"Asset {displayName ?? assetId} added.";
+        return RedirectToAction(nameof(StoreOverview), new { storeId });
+    }
+
+    [HttpPost("stores/{storeId}/remove-asset")]
+    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
+    public async Task<IActionResult> RemoveAsset(string storeId, string assetId, CancellationToken cancellationToken = default)
+    {
+        var (store, config, errorResult) = await ValidateStoreAndConfig();
+        if (errorResult != null) return errorResult;
+
+        var assets = config!.AcceptedAssets?.ToList() ?? new List<AcceptedAsset>();
+        var removed = assets.RemoveAll(a => a.AssetId == assetId);
+
+        if (removed == 0)
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "Asset not found.";
+            return RedirectToAction(nameof(StoreOverview), new { storeId });
+        }
+
+        var newConfig = config with { AcceptedAssets = assets.Count > 0 ? assets : null };
+        store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
+
+        if (assets.Count > 0)
+        {
+            // Update asset payment method config
+            store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], newConfig);
+        }
+        else
+        {
+            // No more assets — remove the ARKADE_ASSET payment method
+            store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], null);
+        }
+
+        await storeRepository.UpdateStore(store);
+
+        TempData[WellKnownTempData.SuccessMessage] = "Asset removed.";
         return RedirectToAction(nameof(StoreOverview), new { storeId });
     }
 
