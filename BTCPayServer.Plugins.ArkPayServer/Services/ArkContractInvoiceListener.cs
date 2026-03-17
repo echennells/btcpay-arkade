@@ -43,7 +43,6 @@ public class ArkContractInvoiceListener(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        logger.LogInformation("ArkContractInvoiceListener starting...");
         await QueueMonitoredInvoices(cancellationToken);
         _leases.Add(eventAggregator.SubscribeAsync<InvoiceEvent>(OnInvoiceEvent));
 
@@ -51,7 +50,7 @@ public class ArkContractInvoiceListener(
         vtxoStorage.VtxosChanged += OnVtxoChanged;
         swapStorage.SwapsChanged += OnSwapChanged;
 
-        logger.LogInformation("ArkContractInvoiceListener subscribed to VtxosChanged and SwapsChanged events");
+        logger.LogInformation("ArkContractInvoiceListener started");
 
         _ = PollAllInvoices(cancellationToken);
     }
@@ -83,10 +82,6 @@ public class ArkContractInvoiceListener(
 
     private async void OnVtxoChanged(object? sender, ArkVtxo vtxo)
     {
-        logger.LogInformation(">>> OnVtxoChanged fired: txid={TxId} vout={Index} amount={Amount} script={Script} assets={AssetCount}",
-            vtxo.TransactionId, vtxo.TransactionOutputIndex, vtxo.Amount, vtxo.Script,
-            vtxo.Assets?.Count ?? 0);
-
         try
         {
             var terms = await clientTransport.GetServerInfoAsync();
@@ -98,37 +93,19 @@ public class ArkContractInvoiceListener(
 
             var hasAssets = vtxo.Assets is { Count: > 0 };
 
-            logger.LogInformation(">>> OnVtxoChanged: address={Address} hasAssets={HasAssets}", addressStr, hasAssets);
-
             if (hasAssets)
             {
-                foreach (var asset in vtxo.Assets!)
-                {
-                    logger.LogInformation(">>>   Asset: id={AssetId} amount={Amount}", asset.AssetId, asset.Amount);
-                }
-
                 var assetInv = await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadeAssetPaymentMethodId, addressStr)
                                ?? await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadePaymentMethodId, addressStr);
-
-                logger.LogInformation(">>> OnVtxoChanged: asset invoice lookup result={InvoiceId} status={Status}",
-                    assetInv?.Id ?? "(null)", assetInv?.Status.ToString() ?? "(null)");
 
                 if (assetInv?.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId) != null)
                 {
                     if (assetInv.Status != InvoiceStatus.New)
                     {
-                        logger.LogInformation("Ignoring VTXO for invoice {InvoiceId} — status is {Status}, not New",
-                            assetInv.Id, assetInv.Status);
+                        logger.LogDebug("Ignoring asset VTXO for invoice {InvoiceId} — status is {Status}", assetInv.Id, assetInv.Status);
                         return;
                     }
-                    logger.LogInformation(">>> OnVtxoChanged: calling HandleAssetPaymentData for invoice {InvoiceId}", assetInv.Id);
                     await HandleAssetPaymentData(vtxo, assetInv);
-                    logger.LogInformation(">>> OnVtxoChanged: HandleAssetPaymentData completed for invoice {InvoiceId}", assetInv.Id);
-                }
-                else
-                {
-                    logger.LogInformation(">>> OnVtxoChanged: no ARKADE_ASSET prompt on invoice {InvoiceId}, skipping",
-                        assetInv?.Id ?? "(no invoice found)");
                 }
             }
             else
@@ -136,15 +113,11 @@ public class ArkContractInvoiceListener(
                 var inv = await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadePaymentMethodId, addressStr)
                           ?? await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadeAssetPaymentMethodId, addressStr);
 
-                logger.LogInformation(">>> OnVtxoChanged: sats invoice lookup result={InvoiceId} status={Status}",
-                    inv?.Id ?? "(null)", inv?.Status.ToString() ?? "(null)");
-
                 if (inv?.GetPaymentPrompt(ArkadePlugin.ArkadePaymentMethodId) != null)
                 {
                     if (inv.Status != InvoiceStatus.New)
                     {
-                        logger.LogInformation("Ignoring VTXO for invoice {InvoiceId} — status is {Status}, not New",
-                            inv.Id, inv.Status);
+                        logger.LogDebug("Ignoring VTXO for invoice {InvoiceId} — status is {Status}", inv.Id, inv.Status);
                         return;
                     }
                     var vtxoEntity = new VtxoEntity
@@ -155,14 +128,7 @@ public class ArkContractInvoiceListener(
                         Script = vtxo.Script,
                         SeenAt = vtxo.CreatedAt
                     };
-                    logger.LogInformation(">>> OnVtxoChanged: calling HandlePaymentData for invoice {InvoiceId}", inv.Id);
                     await HandlePaymentData(vtxoEntity, inv, arkadePaymentMethodHandler);
-                    logger.LogInformation(">>> OnVtxoChanged: HandlePaymentData completed for invoice {InvoiceId}", inv.Id);
-                }
-                else
-                {
-                    logger.LogInformation(">>> OnVtxoChanged: no ARKADE prompt on invoice {InvoiceId}, skipping",
-                        inv?.Id ?? "(no invoice found)");
                 }
             }
         }
@@ -184,30 +150,23 @@ public class ArkContractInvoiceListener(
     
     private async Task HandleAssetPaymentData(ArkVtxo vtxo, InvoiceEntity invoice)
     {
-        logger.LogInformation(">>> HandleAssetPaymentData: invoice={InvoiceId} vtxo={TxId}:{Index}",
-            invoice.Id, vtxo.TransactionId, vtxo.TransactionOutputIndex);
-
-        // Get the expected asset from the invoice prompt
         var prompt = invoice.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId);
         if (prompt is null)
         {
-            logger.LogWarning(">>> HandleAssetPaymentData: no ARKADE_ASSET prompt on invoice {InvoiceId}", invoice.Id);
+            logger.LogWarning("No ARKADE_ASSET prompt on invoice {InvoiceId}", invoice.Id);
             return;
         }
 
         var promptDetails = arkadeAssetPaymentMethodHandler.ParsePaymentPromptDetails(prompt.Details);
         var expectedAssetId = promptDetails.AssetId;
-        logger.LogInformation(">>> HandleAssetPaymentData: expectedAssetId={ExpectedAssetId}", expectedAssetId);
 
-        // Find the matching asset in the VTXO
         var matchingAsset = vtxo.Assets?.FirstOrDefault(a => a.AssetId == expectedAssetId);
         if (matchingAsset is null)
         {
-            logger.LogWarning(">>> HandleAssetPaymentData: no matching asset in VTXO. VTXO assets: [{Assets}]",
-                string.Join(", ", vtxo.Assets?.Select(a => $"{a.AssetId}={a.Amount}") ?? Array.Empty<string>()));
+            logger.LogWarning("No matching asset {ExpectedAssetId} in VTXO {TxId}:{Index}",
+                expectedAssetId, vtxo.TransactionId, vtxo.TransactionOutputIndex);
             return;
         }
-        logger.LogInformation(">>> HandleAssetPaymentData: matched asset {AssetId} amount={Amount}", matchingAsset.AssetId, matchingAsset.Amount);
 
         var outpoint = $"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}";
         var details = new ArkadeAssetPaymentData(outpoint, matchingAsset.AssetId, (long)matchingAsset.Amount);
@@ -322,33 +281,23 @@ public class ArkContractInvoiceListener(
 
     public async Task ToggleArkadeContract(InvoiceEntity invoice)
     {
-        logger.LogInformation(">>> ToggleArkadeContract: invoice={InvoiceId} status={Status}", invoice.Id, invoice.Status);
-
         var activityState = invoice.Status == InvoiceStatus.New
             ? ContractActivityState.Active
             : ContractActivityState.Inactive;
         var listenedContract = GetListenedArkadeInvoice(invoice);
         if (listenedContract is null)
-        {
-            logger.LogWarning(">>> ToggleArkadeContract: no listened contract for invoice {InvoiceId} (no ARKADE prompt?)", invoice.Id);
             return;
-        }
 
-        logger.LogInformation(">>> ToggleArkadeContract: getting server info...");
         var serverInfo = await clientTransport.GetServerInfoAsync();
-        logger.LogInformation(">>> ToggleArkadeContract: got server info, network={Network}", serverInfo.Network?.ChainName);
         var contract = listenedContract.Details.GetContract(serverInfo.Network);
         if (contract is null)
         {
-            logger.LogWarning(">>> ToggleArkadeContract: contract is null for invoice {InvoiceId}", invoice.Id);
+            logger.LogWarning("Contract is null for invoice {InvoiceId}", invoice.Id);
             return;
         }
 
         var script = contract.GetArkAddress().ScriptPubKey.ToHex();
-        logger.LogInformation(">>> ToggleArkadeContract: setting contract script={Script} to {State} for invoice {InvoiceId}",
-            script, activityState, invoice.Id);
         await contractStorage.UpdateContractActivityState(listenedContract.Details.WalletId, script, activityState);
-        logger.LogInformation(">>> ToggleArkadeContract: done for invoice {InvoiceId}", invoice.Id);
     }
 
     private ArkadeListenedContract? GetListenedArkadeInvoice(InvoiceEntity invoice)
@@ -422,7 +371,7 @@ public class ArkContractInvoiceListener(
             memoryCache.Set(GetCacheKey(invoice.Id), invoice, GetExpiration(invoice));
         }
 
-        logger.LogInformation("QueueMonitoredInvoices: queued {Count} invoices", queued.Count);
+        logger.LogDebug("Queued {Count} monitored invoices", queued.Count);
     }
 
     private async Task PollAllInvoices(CancellationToken cancellation)

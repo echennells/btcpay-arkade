@@ -22,11 +22,6 @@ public class ArkadeAssetPaymentMethodHandler(
 {
     public PaymentMethodId PaymentMethodId => ArkadePlugin.ArkadeAssetPaymentMethodId;
 
-    // Cached per-invoice so BeforeFetchingRates and ConfigurePrompt share state
-    private AcceptedAsset? _currentAsset;
-    private string? _currentTicker;
-    private int _currentDecimals;
-
     public async Task ConfigurePrompt(PaymentMethodContext context)
     {
         try
