@@ -1,6 +1,7 @@
 using BTCPayServer.Data;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.ArkPayServer.Services;
+using BTCPayServer.Rating;
 using BTCPayServer.Services;
 using NArk.Core;
 using NArk.Abstractions.Wallets;
@@ -63,9 +64,7 @@ public class ArkadeAssetPaymentMethodHandler(
             if (invoicePrice <= 0m)
                 throw new PaymentMethodUnavailableException("Invoice price must be positive for asset payment");
 
-#pragma warning disable CS0618
-            context.InvoiceEntity.Rates[ticker] = 1m;
-#pragma warning restore CS0618
+            context.InvoiceEntity.AddRate(new CurrencyPair(ticker, context.InvoiceEntity.Currency), 1m);
         }
         // For stablecoins: rate is already provided by ArkadeAssetRateProvider
         // via BTCPay's normal rate fetching flow. No injection needed here.
