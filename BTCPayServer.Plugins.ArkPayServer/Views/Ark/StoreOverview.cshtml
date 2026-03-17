@@ -163,6 +163,8 @@
                             <tr>
                                 <th>Asset ID</th>
                                 <th>Name</th>
+                                <th>Mode</th>
+                                <th>Peg</th>
                                 <th class="text-end">Actions</th>
                             </tr>
                         </thead>
@@ -172,6 +174,26 @@
                                 <tr>
                                     <td><code class="small">@asset.AssetId</code></td>
                                     <td>@(asset.DisplayName ?? "-")</td>
+                                    <td>
+                                        @if (asset.PricingMode == "Stablecoin")
+                                        {
+                                            <span class="badge text-bg-primary">Stablecoin</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge text-bg-secondary">Store Coin</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (asset.PricingMode == "Stablecoin")
+                                        {
+                                            <text>@asset.PegRate @asset.PegCurrency</text>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">Direct</span>
+                                        }
+                                    </td>
                                     <td class="text-end">
                                         <form asp-action="RemoveAsset" method="post" asp-route-storeId="@storeId" class="d-inline">
                                             <input type="hidden" name="assetId" value="@asset.AssetId" />
@@ -189,11 +211,42 @@
                 <p class="text-muted mb-3">No assets configured. Add an asset ID to accept asset payments.</p>
             }
             <form asp-action="AddAsset" method="post" asp-route-storeId="@storeId" class="mt-3">
-                <div class="input-group" style="max-width: 600px;">
-                    <input type="text" name="assetId" class="form-control" placeholder="Enter asset ID..." />
-                    <button type="submit" class="btn btn-primary">Add Asset</button>
+                <div class="row g-2 align-items-end" style="max-width: 800px;">
+                    <div class="col-12 col-md-4">
+                        <label class="form-label small">Asset ID</label>
+                        <input type="text" name="assetId" class="form-control" placeholder="Enter asset ID..." required />
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <label class="form-label small">Pricing Mode</label>
+                        <select name="pricingMode" class="form-select" id="pricingModeSelect">
+                            <option value="Stablecoin">Stablecoin</option>
+                            <option value="StoreCoin">Store Coin</option>
+                        </select>
+                    </div>
+                    <div class="col-6 col-md-2" id="pegCurrencyGroup">
+                        <label class="form-label small">Peg Currency</label>
+                        <input type="text" name="pegCurrency" class="form-control" value="USD" placeholder="USD" />
+                    </div>
+                    <div class="col-6 col-md-2" id="pegRateGroup">
+                        <label class="form-label small">Peg Rate</label>
+                        <input type="number" name="pegRate" class="form-control" value="1" min="0.000001" step="any" />
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <button type="submit" class="btn btn-primary w-100">Add Asset</button>
+                    </div>
+                </div>
+                <div class="form-text mt-1">
+                    <strong>Stablecoin:</strong> pegged to fiat (e.g. 1 USDT = 1 USD).
+                    <strong>Store Coin:</strong> invoice amount is the asset amount directly (e.g. 3 BEPSI).
                 </div>
             </form>
+            <script>
+                document.getElementById('pricingModeSelect')?.addEventListener('change', function() {
+                    var isStoreCoin = this.value === 'StoreCoin';
+                    document.getElementById('pegCurrencyGroup').style.display = isStoreCoin ? 'none' : '';
+                    document.getElementById('pegRateGroup').style.display = isStoreCoin ? 'none' : '';
+                });
+            </script>
         </div>
     </div>
 </div>

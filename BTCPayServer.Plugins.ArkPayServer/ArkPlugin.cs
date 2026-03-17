@@ -11,6 +11,7 @@ using BTCPayServer.Plugins.ArkPayServer.Lightning;
 using BTCPayServer.Plugins.ArkPayServer.PaymentHandler;
 using BTCPayServer.Plugins.ArkPayServer.Payouts.Ark;
 using BTCPayServer.Plugins.ArkPayServer.Services;
+using BTCPayServer.Services.Rates;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Blockchain;
@@ -109,6 +110,10 @@ public class ArkadePlugin : BaseBTCPayServerPlugin
         services.AddSingleton<ICheckoutModelExtension>(sp => sp.GetRequiredService<ArkadeAssetCheckoutModelExtension>());
 
         services.AddDefaultPrettyName(ArkadeAssetPaymentMethodId, "Arkade Asset");
+
+        // Rate provider for Arkade assets (stablecoin pegs + store coin identity rates)
+        services.AddSingleton<ArkadeAssetRateProvider>();
+        services.AddSingleton<IRateProvider>(sp => sp.GetRequiredService<ArkadeAssetRateProvider>());
     }
 
     private static void RegisterDatabase(IServiceCollection services)

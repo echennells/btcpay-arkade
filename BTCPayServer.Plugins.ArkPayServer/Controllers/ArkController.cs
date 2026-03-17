@@ -327,6 +327,9 @@ public class ArkController(
                 {
                     AssetId = asset.AssetId,
                     DisplayName = asset.DisplayName,
+                    PricingMode = asset.PricingMode.ToString(),
+                    PegCurrency = asset.PegCurrency,
+                    PegRate = asset.PegRate,
                 });
             }
         }
@@ -1917,7 +1920,9 @@ public class ArkController(
 
     [HttpPost("stores/{storeId}/add-asset")]
     [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
-    public async Task<IActionResult> AddAsset(string storeId, string assetId, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> AddAsset(string storeId, string assetId,
+        string pricingMode = "Stablecoin", string pegCurrency = "USD", decimal pegRate = 1m,
+        CancellationToken cancellationToken = default)
     {
         var (store, config, errorResult) = await ValidateStoreAndConfig();
         if (errorResult != null) return errorResult;
@@ -1937,6 +1942,12 @@ public class ArkController(
             return RedirectToAction(nameof(StoreOverview), new { storeId });
         }
 
+        if (!Enum.TryParse<AssetPricingMode>(pricingMode, out var mode))
+            mode = AssetPricingMode.Stablecoin;
+
+        if (pegRate <= 0m)
+            pegRate = 1m;
+
         // Try to fetch metadata for display name
         string? displayName = null;
         try
@@ -1955,7 +1966,7 @@ public class ArkController(
             // Asset metadata fetch failed, continue without display name
         }
 
-        assets.Add(new AcceptedAsset(assetId, displayName));
+        assets.Add(new AcceptedAsset(assetId, displayName, mode, pegCurrency.Trim().ToUpperInvariant(), pegRate));
         var newConfig = config with { AcceptedAssets = assets };
         store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
 

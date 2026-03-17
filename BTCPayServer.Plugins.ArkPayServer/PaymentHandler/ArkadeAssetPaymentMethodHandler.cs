@@ -22,6 +22,11 @@ public class ArkadeAssetPaymentMethodHandler(
 {
     public PaymentMethodId PaymentMethodId => ArkadePlugin.ArkadeAssetPaymentMethodId;
 
+    // Cached per-invoice so BeforeFetchingRates and ConfigurePrompt share state
+    private AcceptedAsset? _currentAsset;
+    private string? _currentTicker;
+    private int _currentDecimals;
+
     public async Task ConfigurePrompt(PaymentMethodContext context)
     {
         try
@@ -52,19 +57,23 @@ public class ArkadeAssetPaymentMethodHandler(
         var ticker = metadata?.Ticker ?? "ASSET";
         var decimals = metadata?.Decimals ?? 0;
 
-        // Set the prompt currency to the asset ticker and inject a synthetic rate
-        // so that 1 unit of the asset always pays the full invoice.
-        // Rate = invoicePrice means: Calculate().Due = price / price = 1
         context.Prompt.Currency = ticker;
         context.Prompt.Divisibility = decimals;
 
-        var invoicePrice = context.InvoiceEntity.Price;
-        if (invoicePrice <= 0m)
-            throw new PaymentMethodUnavailableException("Invoice price must be positive for asset payment");
+        if (acceptedAsset.PricingMode == AssetPricingMode.StoreCoin)
+        {
+            // Store coin: invoice price IS the asset amount, no conversion.
+            // Inject identity rate so BTCPay calculates: due = price / 1 = price
+            var invoicePrice = context.InvoiceEntity.Price;
+            if (invoicePrice <= 0m)
+                throw new PaymentMethodUnavailableException("Invoice price must be positive for asset payment");
 
 #pragma warning disable CS0618
-        context.InvoiceEntity.Rates[ticker] = invoicePrice;
+            context.InvoiceEntity.Rates[ticker] = 1m;
 #pragma warning restore CS0618
+        }
+        // For stablecoins: rate is already provided by ArkadeAssetRateProvider
+        // via BTCPay's normal rate fetching flow. No injection needed here.
 
         var contract = await contractService.DeriveContract(
             arkadeConfig.WalletId,
@@ -85,9 +94,33 @@ public class ArkadeAssetPaymentMethodHandler(
 
     public Task BeforeFetchingRates(PaymentMethodContext context)
     {
-        // Leave Prompt.Currency null here so BTCPay doesn't add the asset ticker
-        // to RequiredRates (which would fail since no exchange has rates for it).
-        // Currency and rate are injected later in ConfigurePrompt.
+        var store = context.Store;
+        var configs = store.GetPaymentMethodConfigs();
+
+        if (!configs.TryGetValue(ArkadePlugin.ArkadePaymentMethodId, out var configToken))
+            return Task.CompletedTask;
+
+        var arkadeConfig = configToken.ToObject<ArkadePaymentMethodConfig>(Serializer);
+        if (arkadeConfig?.AcceptedAssets is not { Count: > 0 })
+            return Task.CompletedTask;
+
+        var acceptedAsset = arkadeConfig.AcceptedAssets[0];
+
+        if (acceptedAsset.PricingMode == AssetPricingMode.Stablecoin)
+        {
+            // For stablecoins, we need to fetch the asset metadata to get the ticker,
+            // then set the prompt currency so BTCPay adds it to RequiredRates.
+            // The ArkadeAssetRateProvider will supply the rate (e.g. USDT_USD = 1).
+            var metadata = assetMetadataService.GetAssetMetadata(acceptedAsset.AssetId)
+                .GetAwaiter().GetResult();
+            var ticker = metadata?.Ticker ?? "ASSET";
+
+            context.Prompt.Currency = ticker;
+            context.Prompt.Divisibility = metadata?.Decimals ?? 0;
+        }
+        // For store coins: leave currency null here. We inject it in ConfigurePrompt
+        // to avoid BTCPay trying to fetch rates for a non-existent pair.
+
         return Task.CompletedTask;
     }
 
