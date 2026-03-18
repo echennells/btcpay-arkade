@@ -73,8 +73,6 @@ public class AcceptedAssetViewModel
 {
     public string AssetId { get; set; } = "";
     public string? DisplayName { get; set; }
-    public string? Ticker { get; set; }
-    public int Decimals { get; set; }
     public string PricingMode { get; set; } = "Stablecoin";
     public string PegCurrency { get; set; } = "USD";
     public decimal PegRate { get; set; } = 1m;

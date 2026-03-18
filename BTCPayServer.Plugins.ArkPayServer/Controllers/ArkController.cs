@@ -1935,6 +1935,13 @@ public class ArkController(
 
         assetId = assetId.Trim();
 
+        // Validate asset ID format (expected: 64-char hex hash + 8-char hex index = typically 64+ hex chars)
+        if (assetId.Length < 64 || !assetId.All(c => Uri.IsHexDigit(c)))
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "Invalid asset ID. Expected a hex string (at least 64 characters).";
+            return RedirectToAction(nameof(StoreOverview), new { storeId });
+        }
+
         var assets = config!.AcceptedAssets?.ToList() ?? new List<AcceptedAsset>();
         if (assets.Any(a => a.AssetId == assetId))
         {
@@ -1945,14 +1952,16 @@ public class ArkController(
         if (!Enum.TryParse<AssetPricingMode>(pricingMode, out var mode))
             mode = AssetPricingMode.Stablecoin;
 
-        if (pegRate <= 0m)
-            pegRate = 1m;
+        if (pegRate <= 0m || pegRate > 1_000_000m)
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "Peg rate must be between 0 (exclusive) and 1,000,000.";
+            return RedirectToAction(nameof(StoreOverview), new { storeId });
+        }
 
         // Try to fetch metadata for display name
         string? displayName = null;
         try
         {
-            var serverInfo = await clientTransport.GetServerInfoAsync(cancellationToken);
             var details = await clientTransport.GetAssetDetailsAsync(assetId, cancellationToken);
             if (details?.Metadata != null)
             {
@@ -1961,17 +1970,20 @@ public class ArkController(
                 displayName = !string.IsNullOrEmpty(name) ? $"{name} ({ticker})" : ticker;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Asset metadata fetch failed, continue without display name
+            TempData[WellKnownTempData.ErrorMessage] =
+                $"Warning: asset added but metadata could not be fetched: {ex.Message}";
         }
 
         assets.Add(new AcceptedAsset(assetId, displayName, mode, pegCurrency.Trim().ToUpperInvariant(), pegRate));
         var newConfig = config with { AcceptedAssets = assets };
         store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
 
-        // Enable ARKADE_ASSET payment method on the store so it shows up on invoices
-        store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], newConfig);
+        // Enable ARKADE_ASSET payment method with a minimal marker (handler reads config from ARKADE slot)
+        store.SetPaymentMethodConfig(
+            paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId],
+            new { Enabled = true });
 
         await storeRepository.UpdateStore(store);
 
@@ -2000,8 +2012,10 @@ public class ArkController(
 
         if (assets.Count > 0)
         {
-            // Update asset payment method config
-            store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], newConfig);
+            // Keep ARKADE_ASSET enabled with a minimal marker (handler reads config from ARKADE slot)
+            store.SetPaymentMethodConfig(
+                paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId],
+                new { Enabled = true });
         }
         else
         {

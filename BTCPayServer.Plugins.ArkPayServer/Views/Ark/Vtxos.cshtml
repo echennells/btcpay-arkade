@@ -1,6 +1,7 @@
 @using BTCPayServer.Abstractions.Contracts
 @using BTCPayServer.Abstractions.Extensions
 @using BTCPayServer.Plugins.ArkPayServer.Helpers
+@using BTCPayServer.Plugins.ArkPayServer.Services
 @using NArk.Abstractions.Blockchain
 @using NBitcoin
 @using NArk.Abstractions.VTXOs
@@ -12,6 +13,7 @@
 @inject ArkNetworkConfig ArkNetworkConfig
 @inject IChainTimeProvider ChainTimeProvider
 @inject IClientTransport ClientTransport
+@inject AssetMetadataService AssetMetadataService
 
 @{
     ViewData.SetActivePage(category: "Ark", activePage: "VTXOs", title: "Ark - VTXOs");
@@ -118,6 +120,7 @@
                         <th text-translate="true">Outpoint</th>
                         <th text-translate="true">Address</th>
                         <th text-translate="true">Amount</th>
+                        <th text-translate="true">Asset</th>
                         <th text-translate="true">Expiry</th>
                         <th text-translate="true">Status</th>
                         <th text-translate="true">Spent/Settled By</th>
@@ -128,7 +131,7 @@
                         <th class="mass-action-select-col only-for-js">
                             <input type="checkbox" class="form-check-input mass-action-select-all" />
                         </th>
-                        <th colspan="7">
+                        <th colspan="8">
                             <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
                                 <div>
                                     <strong class="mass-action-selected-count">0</strong>
@@ -173,6 +176,27 @@
                                                     classes="truncate-center-id"/>
                             </td>
                             <td class="align-middle">@Money.Satoshis((long)vtxo.Amount).ToDecimal(MoneyUnit.BTC) BTC</td>
+                            <td class="align-middle">
+                                @if (vtxo.Assets is { Count: > 0 })
+                                {
+                                    @foreach (var asset in vtxo.Assets)
+                                    {
+                                        var meta = await AssetMetadataService.GetAssetMetadata(asset.AssetId);
+                                        var ticker = meta?.Ticker ?? "ASSET";
+                                        var decimals = meta?.Decimals ?? 0;
+                                        var divisor = 1m;
+                                        for (var i = 0; i < decimals; i++) divisor *= 10m;
+                                        var displayAmount = decimals > 0
+                                            ? ((decimal)asset.Amount / divisor).ToString($"F{decimals}")
+                                            : asset.Amount.ToString();
+                                        <span class="font-monospace">@displayAmount @ticker</span><br/>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="text-muted">-</span>
+                                }
+                            </td>
                             <td class="align-middle">
                                 @if (vtxo.ExpiresAt.HasValue)
                                 {

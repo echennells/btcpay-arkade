@@ -1,5 +1,6 @@
 @using BTCPayServer.Abstractions.Extensions
 @using BTCPayServer.Plugins.ArkPayServer.Helpers
+@using BTCPayServer.Plugins.ArkPayServer.Services
 @using NArk.Abstractions.Blockchain
 @using NArk.Abstractions.Contracts
 @using NArk.Core.Contracts
@@ -9,6 +10,7 @@
 @inject ArkNetworkConfig ArkNetworkConfig
 @inject IChainTimeProvider ChainTimeProvider
 @inject IClientTransport ClientTransport
+@inject AssetMetadataService AssetMetadataService
 @model IEnumerable<ArkVtxo>
 
 @{
@@ -100,7 +102,25 @@
                             </td>
                         }
                         <td class="text-end">
-                            <span class="font-monospace small" data-sensitive>@Money.Satoshis((long)vtxo.Amount).ToDecimal(MoneyUnit.BTC) BTC</span>
+                            @if (vtxo.Assets is { Count: > 0 })
+                            {
+                                @foreach (var asset in vtxo.Assets)
+                                {
+                                    var meta = await AssetMetadataService.GetAssetMetadata(asset.AssetId);
+                                    var ticker = meta?.Ticker ?? "ASSET";
+                                    var decimals = meta?.Decimals ?? 0;
+                                    var divisor = 1m;
+                                    for (var i = 0; i < decimals; i++) divisor *= 10m;
+                                    var displayAmount = decimals > 0
+                                        ? ((decimal)asset.Amount / divisor).ToString($"F{decimals}")
+                                        : asset.Amount.ToString();
+                                    <span class="font-monospace small" data-sensitive>@displayAmount @ticker</span><br/>
+                                }
+                            }
+                            else
+                            {
+                                <span class="font-monospace small" data-sensitive>@Money.Satoshis((long)vtxo.Amount).ToDecimal(MoneyUnit.BTC) BTC</span>
+                            }
                         </td>
                         <td class="text-end">
                             @if (vtxo.ExpiresAt.HasValue)

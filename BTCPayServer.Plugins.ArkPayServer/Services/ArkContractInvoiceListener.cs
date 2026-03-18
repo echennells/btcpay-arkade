@@ -100,11 +100,6 @@ public class ArkContractInvoiceListener(
 
                 if (assetInv?.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId) != null)
                 {
-                    if (assetInv.Status != InvoiceStatus.New)
-                    {
-                        logger.LogDebug("Ignoring asset VTXO for invoice {InvoiceId} — status is {Status}", assetInv.Id, assetInv.Status);
-                        return;
-                    }
                     await HandleAssetPaymentData(vtxo, assetInv);
                 }
             }
@@ -115,11 +110,6 @@ public class ArkContractInvoiceListener(
 
                 if (inv?.GetPaymentPrompt(ArkadePlugin.ArkadePaymentMethodId) != null)
                 {
-                    if (inv.Status != InvoiceStatus.New)
-                    {
-                        logger.LogDebug("Ignoring VTXO for invoice {InvoiceId} — status is {Status}", inv.Id, inv.Status);
-                        return;
-                    }
                     var vtxoEntity = new VtxoEntity
                     {
                         TransactionId = vtxo.TransactionId,
@@ -158,13 +148,17 @@ public class ArkContractInvoiceListener(
         }
 
         var promptDetails = arkadeAssetPaymentMethodHandler.ParsePaymentPromptDetails(prompt.Details);
-        var expectedAssetId = promptDetails.AssetId;
 
-        var matchingAsset = vtxo.Assets?.FirstOrDefault(a => a.AssetId == expectedAssetId);
+        // Build the set of accepted asset IDs from AssetOptions (multi-asset) or fall back to single AssetId
+        var acceptedAssetIds = promptDetails.AssetOptions is { Count: > 0 }
+            ? promptDetails.AssetOptions.Select(o => o.AssetId).ToHashSet()
+            : new HashSet<string> { promptDetails.AssetId };
+
+        var matchingAsset = vtxo.Assets?.FirstOrDefault(a => acceptedAssetIds.Contains(a.AssetId));
         if (matchingAsset is null)
         {
-            logger.LogWarning("No matching asset {ExpectedAssetId} in VTXO {TxId}:{Index}",
-                expectedAssetId, vtxo.TransactionId, vtxo.TransactionOutputIndex);
+            logger.LogWarning("No matching asset in VTXO {TxId}:{Index}. Expected one of: {ExpectedAssetIds}",
+                vtxo.TransactionId, vtxo.TransactionOutputIndex, string.Join(", ", acceptedAssetIds));
             return;
         }
 
@@ -174,9 +168,9 @@ public class ArkContractInvoiceListener(
         // Get asset metadata for proper decimal conversion
         var metadata = await assetMetadataService.GetAssetMetadata(matchingAsset.AssetId);
         var decimals = metadata?.Decimals ?? 0;
-        var displayAmount = decimals > 0
-            ? (decimal)matchingAsset.Amount / (decimal)Math.Pow(10, decimals)
-            : (decimal)matchingAsset.Amount;
+        var divisor = 1m;
+        for (var i = 0; i < decimals; i++) divisor *= 10m;
+        var displayAmount = (decimal)matchingAsset.Amount / divisor;
 
         await _paymentLock.WaitAsync();
         try
@@ -369,6 +363,7 @@ public class ArkContractInvoiceListener(
             if (GetListenedArkadeInvoice(invoice) is null) continue;
             _checkInvoices.Writer.TryWrite(invoice.Id);
             memoryCache.Set(GetCacheKey(invoice.Id), invoice, GetExpiration(invoice));
+            queued.Add(invoice.Id);
         }
 
         logger.LogDebug("Queued {Count} monitored invoices", queued.Count);

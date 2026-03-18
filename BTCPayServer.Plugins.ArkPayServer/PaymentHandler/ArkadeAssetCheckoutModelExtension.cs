@@ -1,5 +1,7 @@
 using BTCPayServer.Data;
 using BTCPayServer.Payments;
+using BTCPayServer.Plugins.ArkPayServer.Lightning;
+using Newtonsoft.Json.Linq;
 
 namespace BTCPayServer.Plugins.ArkPayServer.PaymentHandler;
 
@@ -23,7 +25,7 @@ public class ArkadeAssetCheckoutModelExtension : ICheckoutModelExtension
 
     public void ModifyCheckoutModel(CheckoutModelContext context)
     {
-        if (context is not { Handler: ArkadeAssetPaymentMethodHandler })
+        if (context is not { Handler: ArkadeAssetPaymentMethodHandler handler })
             return;
 
         context.Model.CheckoutBodyComponentName = ArkadePlugin.AssetCheckoutBodyComponentName;
@@ -39,5 +41,26 @@ public class ArkadeAssetCheckoutModelExtension : ICheckoutModelExtension
                 .Replace("BITCOIN:", "bitcoin:")
                 .Replace("ARK=", "ark=");
         context.Model.InvoiceBitcoinUrl = paymentLink;
+
+        // Pass asset options to the checkout Vue component via AdditionalData
+        var promptDetails = handler.ParsePaymentPromptDetails(context.Prompt.Details);
+        if (promptDetails.AssetOptions is { Count: > 0 })
+        {
+            var serializer = handler.Serializer;
+            context.Model.AdditionalData["assetOptions"] = JToken.FromObject(promptDetails.AssetOptions, serializer);
+            context.Model.AdditionalData["arkAddress"] = JToken.FromObject(context.Prompt.Destination);
+
+            // Build payment links for each asset option so the checkout JS can swap QR codes
+            var paymentLinks = new Dictionary<string, string>();
+            foreach (var option in promptDetails.AssetOptions)
+            {
+                var link = ArkadeBip21Builder.Create()
+                    .WithArkAddress(context.Prompt.Destination)
+                    .WithAmount(option.Due)
+                    .Build();
+                paymentLinks[option.AssetId] = link;
+            }
+            context.Model.AdditionalData["assetPaymentLinks"] = JToken.FromObject(paymentLinks);
+        }
     }
 }

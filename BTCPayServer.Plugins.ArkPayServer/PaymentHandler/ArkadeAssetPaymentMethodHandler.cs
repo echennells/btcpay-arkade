@@ -48,26 +48,76 @@ public class ArkadeAssetPaymentMethodHandler(
         if (arkadeConfig.AcceptedAssets is not { Count: > 0 })
             throw new PaymentMethodUnavailableException("No assets configured");
 
-        var acceptedAsset = arkadeConfig.AcceptedAssets[0];
-        var metadata = await assetMetadataService.GetAssetMetadata(acceptedAsset.AssetId);
-        var ticker = metadata?.Ticker ?? "ASSET";
-        var decimals = metadata?.Decimals ?? 0;
+        // Build payment options for all accepted assets
+        var invoicePrice = context.InvoiceEntity.Price;
+        var invoiceCurrency = context.InvoiceEntity.Currency;
+        var assetOptions = new List<AssetPaymentOption>();
 
-        context.Prompt.Currency = ticker;
-        context.Prompt.Divisibility = decimals;
-
-        if (acceptedAsset.PricingMode == AssetPricingMode.StoreCoin)
+        foreach (var asset in arkadeConfig.AcceptedAssets)
         {
-            // Store coin: invoice price IS the asset amount, no conversion.
-            // Inject identity rate so BTCPay calculates: due = price / 1 = price
-            var invoicePrice = context.InvoiceEntity.Price;
+            var meta = await assetMetadataService.GetAssetMetadata(asset.AssetId);
+            var assetTicker = meta?.Ticker ?? "ASSET";
+            var assetDecimals = meta?.Decimals ?? 0;
+
+            decimal due;
+            if (asset.PricingMode == AssetPricingMode.StoreCoin)
+            {
+                // Store coin: invoice must be denominated in this asset's ticker
+                if (!string.Equals(invoiceCurrency, assetTicker, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                due = invoicePrice;
+            }
+            else
+            {
+                // Stablecoin: convert invoice amount to asset amount using peg rate.
+                // For same-currency (USD invoice, USDT pegged to USD): due = price / pegRate
+                // For cross-currency (USD invoice, EURT pegged to EUR): convert via forex rate
+                if (string.Equals(invoiceCurrency, asset.PegCurrency, StringComparison.OrdinalIgnoreCase))
+                {
+                    due = asset.PegRate > 0 ? invoicePrice / asset.PegRate : invoicePrice;
+                }
+                else if (context.InvoiceEntity.TryGetRate(
+                    new CurrencyPair(asset.PegCurrency, invoiceCurrency), out var crossRate) && crossRate > 0)
+                {
+                    // crossRate = pegCurrency per invoiceCurrency (e.g. EUR/USD = 0.92)
+                    // priceInPegCurrency = invoicePrice * crossRate
+                    // due = priceInPegCurrency / pegRate
+                    due = invoicePrice * crossRate / asset.PegRate;
+                }
+                else
+                {
+                    // No rate available for this currency pair — skip this asset
+                    continue;
+                }
+            }
+
+            assetOptions.Add(new AssetPaymentOption
+            {
+                AssetId = asset.AssetId,
+                Ticker = assetTicker,
+                DisplayName = asset.DisplayName,
+                Decimals = assetDecimals,
+                Due = due,
+                PricingMode = asset.PricingMode.ToString()
+            });
+        }
+
+        if (assetOptions.Count == 0)
+            throw new PaymentMethodUnavailableException("No accepted assets match the invoice currency");
+
+        // Use the first matching asset as the primary (for Prompt.Currency, rate injection, etc.)
+        var primaryOption = assetOptions[0];
+        var primaryAsset = arkadeConfig.AcceptedAssets.First(a => a.AssetId == primaryOption.AssetId);
+
+        context.Prompt.Currency = primaryOption.Ticker;
+        context.Prompt.Divisibility = primaryOption.Decimals;
+
+        if (primaryAsset.PricingMode == AssetPricingMode.StoreCoin)
+        {
             if (invoicePrice <= 0m)
                 throw new PaymentMethodUnavailableException("Invoice price must be positive for asset payment");
-
-            context.InvoiceEntity.AddRate(new CurrencyPair(ticker, context.InvoiceEntity.Currency), 1m);
+            context.InvoiceEntity.AddRate(new CurrencyPair(primaryOption.Ticker, invoiceCurrency), 1m);
         }
-        // For stablecoins: rate is already provided by ArkadeAssetRateProvider
-        // via BTCPay's normal rate fetching flow. No injection needed here.
 
         var contract = await contractService.DeriveContract(
             arkadeConfig.WalletId,
@@ -75,7 +125,10 @@ public class ArkadeAssetPaymentMethodHandler(
             metadata: new Dictionary<string, string> { ["Source"] = $"asset-invoice:{context.InvoiceEntity.Id}" },
             cancellationToken: CancellationToken.None);
 
-        var details = new ArkadeAssetPromptDetails(arkadeConfig.WalletId, contract, acceptedAsset.AssetId);
+        var details = new ArkadeAssetPromptDetails(arkadeConfig.WalletId, contract, primaryOption.AssetId)
+        {
+            AssetOptions = assetOptions
+        };
         var address = contract.GetArkAddress();
 
         context.Prompt.Destination = address.ToString(btcPayServerEnvironment.NetworkType == ChainName.Mainnet);
@@ -86,36 +139,44 @@ public class ArkadeAssetPaymentMethodHandler(
         context.TrackedDestinations.Add(address.ScriptPubKey.PaymentScript.ToHex());
     }
 
-    public Task BeforeFetchingRates(PaymentMethodContext context)
+    public async Task BeforeFetchingRates(PaymentMethodContext context)
     {
         var store = context.Store;
         var configs = store.GetPaymentMethodConfigs();
 
         if (!configs.TryGetValue(ArkadePlugin.ArkadePaymentMethodId, out var configToken))
-            return Task.CompletedTask;
+            return;
 
         var arkadeConfig = configToken.ToObject<ArkadePaymentMethodConfig>(Serializer);
         if (arkadeConfig?.AcceptedAssets is not { Count: > 0 })
-            return Task.CompletedTask;
+            return;
 
-        var acceptedAsset = arkadeConfig.AcceptedAssets[0];
-
-        if (acceptedAsset.PricingMode == AssetPricingMode.Stablecoin)
+        // Request rates for ALL stablecoin asset tickers so BTCPay fetches forex rates
+        // we need for cross-currency conversion (e.g. USD invoice → EURT pegged to EUR).
+        bool primarySet = false;
+        foreach (var asset in arkadeConfig.AcceptedAssets)
         {
-            // For stablecoins, we need to fetch the asset metadata to get the ticker,
-            // then set the prompt currency so BTCPay adds it to RequiredRates.
-            // The ArkadeAssetRateProvider will supply the rate (e.g. USDT_USD = 1).
-            var metadata = assetMetadataService.GetAssetMetadata(acceptedAsset.AssetId)
-                .GetAwaiter().GetResult();
+            if (asset.PricingMode != AssetPricingMode.Stablecoin)
+                continue;
+
+            var metadata = await assetMetadataService.GetAssetMetadata(asset.AssetId);
             var ticker = metadata?.Ticker ?? "ASSET";
 
-            context.Prompt.Currency = ticker;
-            context.Prompt.Divisibility = metadata?.Decimals ?? 0;
+            if (!primarySet)
+            {
+                // First stablecoin sets the prompt currency (BTCPay auto-adds it to RequiredRates)
+                context.Prompt.Currency = ticker;
+                context.Prompt.Divisibility = metadata?.Decimals ?? 0;
+                primarySet = true;
+            }
+            else
+            {
+                // Additional stablecoins: explicitly request their rates
+                context.RequiredRates.Add(ticker);
+            }
         }
-        // For store coins: leave currency null here. We inject it in ConfigurePrompt
+        // For store coins only: leave currency null here. We inject it in ConfigurePrompt
         // to avoid BTCPay trying to fetch rates for a non-existent pair.
-
-        return Task.CompletedTask;
     }
 
     public JsonSerializer Serializer { get; } = BlobSerializer.CreateSerializer().Serializer;

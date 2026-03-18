@@ -5,9 +5,29 @@
 
 <template id="@ArkadePlugin.AssetCheckoutBodyComponentName">
     <div class="payment-box">
-        <div v-if="model.invoiceBitcoinUrlQR" class="qr-container clipboard-button" :data-qr-value="model.invoiceBitcoinUrlQR" :data-clipboard="model.invoiceBitcoinUrl" data-clipboard-confirm-element="#Address_@Model.PaymentMethodId [data-clipboard]">
+        <!-- Asset selector (shown when multiple assets available) -->
+        <div v-if="assetOptions && assetOptions.length > 1" class="mb-3">
+            <label class="form-label fw-semibold small mb-2">Pay with</label>
+            <div class="btn-group w-100" role="group">
+                <button v-for="opt in assetOptions" :key="opt.assetId"
+                    type="button"
+                    class="btn btn-sm"
+                    :class="selectedAssetId === opt.assetId ? 'btn-primary' : 'btn-outline-secondary'"
+                    @@click="selectAsset(opt.assetId)">
+                    {{ opt.displayName || opt.ticker }}
+                </button>
+            </div>
+        </div>
+
+        <!-- Amount due in selected asset -->
+        <div v-if="selectedOption" class="text-center mb-2">
+            <span class="fs-5 fw-bold">{{ formatAmount(selectedOption.due, selectedOption.decimals) }}</span>
+            <span class="text-muted ms-1">{{ selectedOption.ticker }}</span>
+        </div>
+
+        <div v-if="currentQrValue" class="qr-container clipboard-button" :data-qr-value="currentQrValue" :data-clipboard="currentPaymentLink" data-clipboard-confirm-element="#Address_@Model.PaymentMethodId [data-clipboard]">
             <div>
-                <qrcode :value="model.invoiceBitcoinUrlQR" tag="div" :options="qrOptions" />
+                <qrcode :value="currentQrValue" tag="div" :options="qrOptions" />
             </div>
             <img class="qr-icon" :src="model.cryptoImage" :alt="model.paymentMethodName"/>
         </div>
@@ -17,8 +37,8 @@
                 <label>Ark Address (Asset Payment)</label>
             </div>
         </div>
-        <a v-if="model.invoiceBitcoinUrl && model.showPayInWalletButton" class="btn btn-primary rounded-pill w-100 mt-4" id="PayInWallet" target="_blank"
-           :href="model.invoiceBitcoinUrl" :title="$t('Arkade payment link')" v-t="'pay_in_wallet'"></a>
+        <a v-if="currentPaymentLink && model.showPayInWalletButton" class="btn btn-primary rounded-pill w-100 mt-4" id="PayInWallet" target="_blank"
+           :href="currentPaymentLink" :title="$t('Arkade payment link')" v-t="'pay_in_wallet'"></a>
     </div>
 </template>
 
@@ -28,6 +48,40 @@
         template: @Safe.Json("#" + ArkadePlugin.AssetCheckoutBodyComponentName),
         components: {
             qrcode: VueQrcode
+        },
+        data: function() {
+            var options = this.model.assetOptions || [];
+            var defaultId = options.length > 0 ? options[0].assetId : null;
+            return {
+                assetOptions: options,
+                selectedAssetId: defaultId,
+                paymentLinks: this.model.assetPaymentLinks || {}
+            };
+        },
+        computed: {
+            selectedOption: function() {
+                var self = this;
+                if (!this.assetOptions || !this.selectedAssetId) return null;
+                return this.assetOptions.find(function(o) { return o.assetId === self.selectedAssetId; });
+            },
+            currentPaymentLink: function() {
+                if (!this.selectedAssetId) return this.model.invoiceBitcoinUrl;
+                return this.paymentLinks[this.selectedAssetId] || this.model.invoiceBitcoinUrl;
+            },
+            currentQrValue: function() {
+                var link = this.currentPaymentLink;
+                if (!link) return this.model.invoiceBitcoinUrlQR;
+                return link.toUpperCase().replace('BITCOIN:', 'bitcoin:').replace('ARK=', 'ark=');
+            }
+        },
+        methods: {
+            selectAsset: function(assetId) {
+                this.selectedAssetId = assetId;
+            },
+            formatAmount: function(amount, decimals) {
+                if (typeof amount !== 'number') return amount;
+                return decimals > 0 ? amount.toFixed(decimals) : amount.toString();
+            }
         }
     });
 </script>

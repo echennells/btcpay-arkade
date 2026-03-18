@@ -42,6 +42,16 @@ public class ArkadeCheckoutModelExtension: ICheckoutModelExtension
                 .Replace("ARK=","ark=");
         // Full BIP21 with all params for "Pay in wallet" link
         context.Model.InvoiceBitcoinUrl = paymentLink;
+
+        // Hide on-chain BTC (Arkade replaces it) but keep Lightning visible
+        if (context.Store.GetStoreBlob().OnChainWithLnInvoiceFallback)
+        {
+            var onchain = PaymentTypes.CHAIN.GetPaymentMethodId("BTC");
+            context.Model.AvailablePaymentMethods
+                .Where(method => method.PaymentMethodId == onchain)
+                .ToList()
+                .ForEach(method => method.Displayed = false);
+        }
     }
 
     /// <summary>
