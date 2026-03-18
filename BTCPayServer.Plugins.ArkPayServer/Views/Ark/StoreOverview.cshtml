@@ -187,7 +187,7 @@
                                     <td>
                                         @if (asset.PricingMode == "Stablecoin")
                                         {
-                                            <text>@asset.PegRate @asset.PegCurrency</text>
+                                            <text>@asset.PegCurrency</text>
                                         }
                                         else
                                         {
@@ -227,10 +227,6 @@
                         <label class="form-label small">Peg Currency</label>
                         <input type="text" name="pegCurrency" class="form-control" value="USD" placeholder="USD" />
                     </div>
-                    <div class="col-6 col-md-2" id="pegRateGroup">
-                        <label class="form-label small">Peg Rate</label>
-                        <input type="number" name="pegRate" class="form-control" value="1" min="0.000001" step="any" />
-                    </div>
                     <div class="col-6 col-md-2">
                         <button type="submit" class="btn btn-primary w-100">Add Asset</button>
                     </div>
@@ -244,7 +240,6 @@
                 document.getElementById('pricingModeSelect')?.addEventListener('change', function() {
                     var isStoreCoin = this.value === 'StoreCoin';
                     document.getElementById('pegCurrencyGroup').style.display = isStoreCoin ? 'none' : '';
-                    document.getElementById('pegRateGroup').style.display = isStoreCoin ? 'none' : '';
                 });
             </script>
         </div>

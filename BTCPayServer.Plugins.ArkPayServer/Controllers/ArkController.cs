@@ -1921,7 +1921,7 @@ public class ArkController(
     [HttpPost("stores/{storeId}/add-asset")]
     [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
     public async Task<IActionResult> AddAsset(string storeId, string assetId,
-        string pricingMode = "Stablecoin", string pegCurrency = "USD", decimal pegRate = 1m,
+        string pricingMode = "Stablecoin", string pegCurrency = "USD",
         CancellationToken cancellationToken = default)
     {
         var (store, config, errorResult) = await ValidateStoreAndConfig();
@@ -1952,12 +1952,6 @@ public class ArkController(
         if (!Enum.TryParse<AssetPricingMode>(pricingMode, out var mode))
             mode = AssetPricingMode.Stablecoin;
 
-        if (pegRate <= 0m || pegRate > 1_000_000m)
-        {
-            TempData[WellKnownTempData.ErrorMessage] = "Peg rate must be between 0 (exclusive) and 1,000,000.";
-            return RedirectToAction(nameof(StoreOverview), new { storeId });
-        }
-
         // Try to fetch metadata for display name
         string? displayName = null;
         try
@@ -1976,7 +1970,7 @@ public class ArkController(
                 $"Warning: asset added but metadata could not be fetched: {ex.Message}";
         }
 
-        assets.Add(new AcceptedAsset(assetId, displayName, mode, pegCurrency.Trim().ToUpperInvariant(), pegRate));
+        assets.Add(new AcceptedAsset(assetId, displayName, mode, pegCurrency.Trim().ToUpperInvariant()));
         var newConfig = config with { AcceptedAssets = assets };
         store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
 
