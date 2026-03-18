@@ -48,7 +48,6 @@ public class ArkadeAssetCheckoutModelExtension : ICheckoutModelExtension
         {
             var serializer = handler.Serializer;
             context.Model.AdditionalData["assetOptions"] = JToken.FromObject(promptDetails.AssetOptions, serializer);
-            context.Model.AdditionalData["arkAddress"] = JToken.FromObject(context.Prompt.Destination);
 
             // Build payment links for each asset option so the checkout JS can swap QR codes
             var paymentLinks = new Dictionary<string, string>();

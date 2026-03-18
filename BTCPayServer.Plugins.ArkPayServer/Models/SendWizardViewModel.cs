@@ -28,6 +28,9 @@ public class SendWizardViewModel
     // Balance summary
     public ArkBalancesViewModel? Balances { get; set; }
 
+    // Available assets for the asset selector dropdown
+    public List<AssetBalanceViewModel> AvailableAssets => Balances?.AssetBalances ?? [];
+
     // Fee estimation
     public long? EstimatedFeeSats { get; set; }
     public string? FeeDescription { get; set; }
@@ -54,6 +57,10 @@ public class SendOutputViewModel
     public string Destination { get; set; } = "";
     public decimal? AmountBtc { get; set; }
     public long? AmountSats => AmountBtc.HasValue ? (long)(AmountBtc.Value * 100_000_000) : null;
+
+    // Asset fields (optional — only used when sending assets)
+    public string? AssetId { get; set; }
+    public ulong AssetAmount { get; set; }
     public DestinationType? DetectedType { get; set; }
     public string? Error { get; set; }
 

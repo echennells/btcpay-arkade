@@ -79,7 +79,8 @@ public class ArkController(
     IVtxoStorage vtxoStorage,
     IWalletStorage walletStorage,
     IDbContextFactory<ArkPluginDbContext> dbContextFactory,
-    IHttpClientFactory httpClientFactory) : Controller
+    IHttpClientFactory httpClientFactory,
+    AssetMetadataService assetMetadataService) : Controller
 {
     [HttpGet("stores/{storeId}/initial-setup")]
     [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
@@ -2004,14 +2005,7 @@ public class ArkController(
         var newConfig = config with { AcceptedAssets = assets.Count > 0 ? assets : null };
         store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
 
-        if (assets.Count > 0)
-        {
-            // Keep ARKADE_ASSET enabled with a minimal marker (handler reads config from ARKADE slot)
-            store.SetPaymentMethodConfig(
-                paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId],
-                new { Enabled = true });
-        }
-        else
+        if (assets.Count == 0)
         {
             // No more assets — remove the ARKADE_ASSET payment method
             store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], null);
@@ -2893,12 +2887,37 @@ public class ArkController(
             .Where(coin => lockedSet.Contains(coin.Outpoint))
             .Sum(coin => coin.Amount.Satoshi);
 
+        // Aggregate asset balances from available (non-locked, non-recoverable) coins
+        var assetTotals = new Dictionary<string, ulong>();
+        foreach (var coin in coinsByRecoverableStatus[false])
+        {
+            if (lockedSet.Contains(coin.Outpoint)) continue;
+            if (coin.Assets is not { Count: > 0 }) continue;
+            foreach (var asset in coin.Assets)
+                assetTotals[asset.AssetId] = assetTotals.GetValueOrDefault(asset.AssetId) + asset.Amount;
+        }
+
+        var assetBalances = new List<AssetBalanceViewModel>();
+        foreach (var (assetId, amount) in assetTotals)
+        {
+            var metadata = await assetMetadataService.GetAssetMetadata(assetId, cancellationToken);
+            assetBalances.Add(new AssetBalanceViewModel
+            {
+                AssetId = assetId,
+                Amount = amount,
+                Name = metadata?.Name,
+                Ticker = metadata?.Ticker,
+                Decimals = metadata?.Decimals ?? 0,
+            });
+        }
+
         return new ArkBalancesViewModel
         {
             AvailableBalance = availableBalance - lockedBalance,
             LockedBalance = lockedBalance,
             RecoverableBalance = recoverableBalance,
             UnspendableBalance = unspendableBalance,
+            AssetBalances = assetBalances,
         };
     }
 

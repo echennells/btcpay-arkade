@@ -188,6 +188,21 @@ else
                                            @(output.IsReadonly && output.AmountBtc.HasValue ? "readonly" : "") />
                                     <small class="remaining-balance-hint text-muted d-none mt-1"></small>
                                 </div>
+                                @if (Model.AvailableAssets.Count > 0)
+                                {
+                                    <div class="col-12 col-md-3 asset-selector-group">
+                                        <label class="form-label" text-translate="true">Asset (optional)</label>
+                                        <select name="Outputs[@i].AssetId" class="form-select asset-select" data-index="@i">
+                                            <option value="">BTC (default)</option>
+                                            @foreach (var asset in Model.AvailableAssets)
+                                            {
+                                                <option value="@asset.AssetId" selected="@(output.AssetId == asset.AssetId)">
+                                                    @asset.DisplayName (@asset.FormattedAmount available)
+                                                </option>
+                                            }
+                                        </select>
+                                    </div>
+                                }
                                 <div class="col-12 col-md-2 d-flex align-items-end">
                                     <button type="button" class="btn btn-outline-danger remove-output-btn" data-index="@i"
                                             style="@(i == 0 && Model.Outputs.Count == 1 && string.IsNullOrWhiteSpace(output.Destination) ? "display:none" : "")">
@@ -195,6 +210,7 @@ else
                                     </button>
                                 </div>
                             </div>
+                            <input type="hidden" name="Outputs[@i].AssetAmount" value="@output.AssetAmount" />
                             <input type="hidden" name="Outputs[@i].PayoutId" value="@output.PayoutId" />
                             <input type="hidden" name="Outputs[@i].IsReadonly" value="@output.IsReadonly.ToString().ToLower()" />
                             <input type="hidden" name="Outputs[@i].IsBip21Parsed" value="@output.IsBip21Parsed.ToString().ToLower()" />
