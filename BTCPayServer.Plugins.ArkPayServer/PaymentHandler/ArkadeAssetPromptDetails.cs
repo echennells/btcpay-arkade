@@ -39,8 +39,8 @@ public record ArkadeAssetPromptDetails
     {
     }
 
-    public string WalletId { get; init; }
-    public string ContractString { get; init; }
+    public string? WalletId { get; set; }
+    public string? ContractString { get; set; }
 
     /// <summary>
     /// The primary (default) asset ID — used for Prompt.Currency and backward compatibility.

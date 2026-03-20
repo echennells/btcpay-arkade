@@ -35,11 +35,10 @@ public class ArkadeAssetCheckoutModelExtension : ICheckoutModelExtension
             _paymentLinkExtension.GetPaymentLink(context.Prompt, context.UrlHelper)
             ?? throw new Exception("Failed to generate Arkade asset payment link");
 
-        context.Model.InvoiceBitcoinUrlQR =
-            paymentLink
-                .ToUpperInvariant()
-                .Replace("BITCOIN:", "bitcoin:")
-                .Replace("ARK=", "ark=");
+        // QR: uppercase only the bech32m ark address (case-insensitive by spec),
+        // leave case-sensitive values like hex asset IDs untouched.
+        var dest = context.Prompt.Destination;
+        context.Model.InvoiceBitcoinUrlQR = paymentLink.Replace(dest, dest.ToUpperInvariant());
         context.Model.InvoiceBitcoinUrl = paymentLink;
 
         // Pass asset options to the checkout Vue component via AdditionalData
@@ -54,8 +53,9 @@ public class ArkadeAssetCheckoutModelExtension : ICheckoutModelExtension
             foreach (var option in promptDetails.AssetOptions)
             {
                 var link = ArkadeBip21Builder.Create()
-                    .WithArkAddress(context.Prompt.Destination)
+                    .WithArkAddress(dest)
                     .WithAmount(option.Due)
+                    .WithCustomParameter("assetid", option.AssetId)
                     .Build();
                 paymentLinks[option.AssetId] = link;
             }

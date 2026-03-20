@@ -3800,9 +3800,7 @@ public class ArkController(
             result.Type = Send2DestinationType.ArkAddress;
             result.ResolvedAddress = rawDestination;
             result.AmountSats = amountSats;
-            result.IsValid = true;
-            if (amountSats <= 0)
-                result.Error = "Amount is required for Ark address";
+            result.IsValid = true; // Amount validated at send time (may be asset-only send)
             return result;
         }
 

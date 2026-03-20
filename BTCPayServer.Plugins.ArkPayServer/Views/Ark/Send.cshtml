@@ -189,30 +189,44 @@ else
                                            @(output.IsReadonly && output.AmountBtc.HasValue ? "readonly" : "") />
                                     <small class="remaining-balance-hint text-muted d-none mt-1"></small>
                                 </div>
-                                @if (Model.AvailableAssets.Count > 0)
-                                {
-                                    <div class="col-12 col-md-3 asset-selector-group">
-                                        <label class="form-label" text-translate="true">Asset (optional)</label>
-                                        <select name="Outputs[@i].AssetId" class="form-select asset-select" data-index="@i">
-                                            <option value="">BTC (default)</option>
+                                <div class="col-12 col-md-2 d-flex align-items-end">
+                                    <button type="button" class="btn btn-outline-danger remove-output-btn" data-index="@i"
+                                            style="@(Model.Outputs.Count <= 1 ? "display:none" : "")">
+                                        <vc:icon symbol="cross" />
+                                    </button>
+                                </div>
+                            </div>
+                            @if (Model.AvailableAssets.Count > 0)
+                            {
+                                <div class="row g-3 mt-1">
+                                    <div class="col-12 col-md-5">
+                                        <label class="form-label text-muted small">Asset (optional)</label>
+                                        <select name="Outputs[@i].AssetId" class="form-select form-select-sm asset-select" data-index="@i">
+                                            <option value="" data-decimals="0">None (BTC only)</option>
                                             @foreach (var asset in Model.AvailableAssets)
                                             {
-                                                <option value="@asset.AssetId" selected="@(output.AssetId == asset.AssetId)">
+                                                <option value="@asset.AssetId" data-decimals="@asset.Decimals" data-max="@asset.FormattedAmount" selected="@(output.AssetId == asset.AssetId)">
                                                     @asset.DisplayName (@asset.FormattedAmount available)
                                                 </option>
                                             }
                                         </select>
                                     </div>
-                                }
-                                <div class="col-12 col-md-1 d-flex align-items-center" style="margin-top: 1.75rem;">
-                                    <button type="button" class="btn btn-link text-danger remove-output-btn p-0" data-index="@i"
-                                            style="@(i == 0 && Model.Outputs.Count == 1 && string.IsNullOrWhiteSpace(output.Destination) ? "display:none" : "")"
-                                            title="Remove destination">
-                                        <vc:icon symbol="cross" />
-                                    </button>
+                                    <div class="col-12 col-md-5 asset-amount-col" style="@(string.IsNullOrEmpty(output.AssetId) ? "display:none" : "")">
+                                        <label class="form-label text-muted small">Asset Amount <span class="text-danger">*</span></label>
+                                        <input type="number"
+                                               class="form-control form-control-sm asset-amount-input"
+                                               placeholder="Enter amount to send"
+                                               step="any"
+                                               min="0"
+                                               data-index="@i" />
+                                        <input type="hidden"
+                                               name="Outputs[@i].AssetAmount"
+                                               class="asset-amount-atomic"
+                                               value="@(output.AssetAmount > 0 ? output.AssetAmount.ToString() : "")"
+                                               data-index="@i" />
+                                    </div>
                                 </div>
-                            </div>
-                            <input type="hidden" name="Outputs[@i].AssetAmount" value="@output.AssetAmount" />
+                            }
                             <input type="hidden" name="Outputs[@i].PayoutId" value="@output.PayoutId" />
                             <input type="hidden" name="Outputs[@i].IsReadonly" value="@output.IsReadonly.ToString().ToLower()" />
                             <input type="hidden" name="Outputs[@i].IsBip21Parsed" value="@output.IsBip21Parsed.ToString().ToLower()" />
@@ -563,10 +577,14 @@ else
             rows.forEach((row, i) => {
                 const destInput = row.querySelector('.destination-input');
                 const amountInput = row.querySelector('.amount-input');
+                const assetSelect = row.querySelector('.asset-select');
+                const assetAmountAtomic = row.querySelector('.asset-amount-atomic');
 
                 outputs.push({
                     destination: destInput?.value?.trim() || '',
-                    amountBtc: amountInput?.value ? parseFloat(amountInput.value) : null
+                    amountBtc: amountInput?.value ? parseFloat(amountInput.value) : null,
+                    assetId: assetSelect?.value || null,
+                    assetAmount: assetAmountAtomic?.value ? parseInt(assetAmountAtomic.value) : null
                 });
             });
 
@@ -629,11 +647,9 @@ else
                     badge.className = 'destination-type-badge badge ' + (label ? cls : '');
                 }
 
-                // Hide remove button on the only row if it's empty
+                // Hide remove button when there's only one output row
                 if (removeBtn) {
-                    const isOnlyRow = rows.length === 1;
-                    const isEmpty = !destInput?.value?.trim();
-                    removeBtn.style.display = (isOnlyRow && isEmpty) ? 'none' : '';
+                    removeBtn.style.display = rows.length <= 1 ? 'none' : '';
                 }
             });
 
@@ -701,7 +717,9 @@ else
                         spendType: state.userSpendType,
                         outputs: outputs.filter(o => o.destination).map(o => ({
                             destination: o.destination,
-                            amountSats: o.amountBtc ? Math.round(o.amountBtc * 100000000) : null
+                            amountSats: o.amountBtc ? Math.round(o.amountBtc * 100000000) : null,
+                            assetId: o.assetId || null,
+                            assetAmount: o.assetAmount || null
                         }))
                     })
                 });
@@ -1043,6 +1061,7 @@ else
                 </div>
             `;
             outputsContainer.insertAdjacentHTML('beforeend', template);
+            updateRemoveButtons();
         }
 
         // Remove output row and reindex
@@ -1069,8 +1088,19 @@ else
                 reindexOutputs();
             }
 
+            updateRemoveButtons();
             updateDestinationBadges();
             estimateFees();
+        }
+
+        // Show/hide remove buttons based on output count (hide when single output)
+        function updateRemoveButtons() {
+            const rows = outputsContainer.querySelectorAll('.output-row');
+            const show = rows.length > 1;
+            rows.forEach(row => {
+                const btn = row.querySelector('.remove-output-btn');
+                if (btn) btn.style.display = show ? '' : 'none';
+            });
         }
 
         // Reindex output rows after removal
@@ -1350,6 +1380,71 @@ else
                 estimateFees();
             }
         }, 500));
+
+        // Convert human-readable asset amount to atomic units
+        function updateAssetAtomicAmount(row) {
+            const select = row.querySelector('.asset-select');
+            const displayInput = row.querySelector('.asset-amount-input');
+            const atomicInput = row.querySelector('.asset-amount-atomic');
+            if (!select || !displayInput || !atomicInput) return;
+
+            const selectedOption = select.options[select.selectedIndex];
+            const decimals = parseInt(selectedOption?.dataset.decimals || '0');
+            const displayValue = parseFloat(displayInput.value);
+
+            if (isNaN(displayValue) || displayValue <= 0) {
+                atomicInput.value = '';
+                return;
+            }
+
+            const atomicValue = Math.round(displayValue * Math.pow(10, decimals));
+            atomicInput.value = atomicValue.toString();
+        }
+
+        // Asset selector: show/hide asset amount field and update BTC amount label
+        outputsContainer?.addEventListener('change', function(e) {
+            if (e.target.classList.contains('asset-select')) {
+                const row = e.target.closest('.output-row');
+                const amountCol = row?.querySelector('.asset-amount-col');
+                const btcAmountLabel = row?.querySelector('.amount-input')?.closest('.col-12, .col-md-3')?.querySelector('.form-label');
+                const btcAmountInput = row?.querySelector('.amount-input');
+                const displayInput = row?.querySelector('.asset-amount-input');
+                const isAsset = !!e.target.value;
+                if (amountCol) {
+                    amountCol.style.display = isAsset ? '' : 'none';
+                }
+                if (btcAmountLabel) {
+                    btcAmountLabel.textContent = isAsset ? 'Amount (BTC) - Optional' : 'Amount (BTC)';
+                }
+                if (btcAmountInput) {
+                    btcAmountInput.placeholder = isAsset ? 'Optional for asset sends' : 'Optional';
+                }
+                // Update step/placeholder based on asset decimals
+                if (isAsset && displayInput) {
+                    const selectedOption = e.target.options[e.target.selectedIndex];
+                    const decimals = parseInt(selectedOption?.dataset.decimals || '0');
+                    const maxAmount = selectedOption?.dataset.max || '';
+                    displayInput.step = decimals > 0 ? (1 / Math.pow(10, decimals)).toString() : '1';
+                    displayInput.placeholder = maxAmount ? `Max: ${maxAmount}` : 'Enter amount to send';
+                    displayInput.value = '';
+                }
+                // Clear any previous "Amount is required" error when switching to asset mode
+                if (isAsset) {
+                    updateOutputError(parseInt(row.dataset.index), null);
+                }
+                // Re-estimate fees when asset selection changes
+                estimateFees();
+            }
+        });
+
+        // Re-estimate fees when asset amount is typed and update atomic value
+        outputsContainer?.addEventListener('input', function(e) {
+            if (e.target.classList.contains('asset-amount-input')) {
+                const row = e.target.closest('.output-row');
+                if (row) updateAssetAtomicAmount(row);
+                estimateFees();
+            }
+        });
 
         coinsTable?.addEventListener('change', function(e) {
             if (e.target.classList.contains('coin-checkbox')) {

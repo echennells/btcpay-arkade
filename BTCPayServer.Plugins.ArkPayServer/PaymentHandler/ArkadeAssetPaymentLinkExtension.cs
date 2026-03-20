@@ -12,11 +12,16 @@ public class ArkadeAssetPaymentLinkExtension : IPaymentLinkExtension
     public string GetPaymentLink(PaymentPrompt prompt, IUrlHelper? urlHelper)
     {
         var amount = prompt.Calculate().Due;
+        var assetId = prompt.Details?["AssetId"]?.ToString();
 
-        // Build a simple BIP21-style URI with just the ark address
-        return ArkadeBip21Builder.Create()
+        var builder = ArkadeBip21Builder.Create()
             .WithArkAddress(prompt.Destination)
-            .WithAmount(amount)
-            .Build();
+            .WithAmount(amount);
+
+        // Include asset ID so the payer's wallet knows which asset is expected
+        if (!string.IsNullOrEmpty(assetId))
+            builder.WithCustomParameter("assetid", assetId);
+
+        return builder.Build();
     }
 }

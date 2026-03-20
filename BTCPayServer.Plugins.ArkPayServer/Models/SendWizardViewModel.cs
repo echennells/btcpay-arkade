@@ -56,7 +56,7 @@ public class SendOutputViewModel
 {
     public string Destination { get; set; } = "";
     public decimal? AmountBtc { get; set; }
-    public long? AmountSats => AmountBtc.HasValue ? (long)(AmountBtc.Value * 100_000_000) : null;
+    public long? AmountSats => AmountBtc.HasValue ? (long)Math.Round(AmountBtc.Value * 100_000_000m) : null;
 
     // Asset fields (optional — only used when sending assets)
     public string? AssetId { get; set; }

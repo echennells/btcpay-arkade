@@ -39,11 +39,14 @@ public class ArkContractInvoiceListener(
 {
     private readonly Channel<string> _checkInvoices = Channel.CreateUnbounded<string>();
     private readonly SemaphoreSlim _paymentLock = new(1, 1);
+    private CancellationTokenSource _cts = new();
     private CompositeDisposable _leases = new();
+    private int _inflightHandlers;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await QueueMonitoredInvoices(cancellationToken);
+        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        await QueueMonitoredInvoices(_cts.Token);
         _leases.Add(eventAggregator.SubscribeAsync<InvoiceEvent>(OnInvoiceEvent));
 
         // Subscribe to NNark's storage events directly
@@ -52,13 +55,17 @@ public class ArkContractInvoiceListener(
 
         logger.LogInformation("ArkContractInvoiceListener started");
 
-        _ = PollAllInvoices(cancellationToken);
+        _ = PollAllInvoices(_cts.Token);
     }
 
     private async void OnSwapChanged(object? sender, NArk.Swaps.Models.ArkSwap swap)
     {
+        Interlocked.Increment(ref _inflightHandlers);
         try
         {
+            if (_cts.IsCancellationRequested)
+                return;
+
             // Only process reverse submarine swaps (Lightning -> Ark)
             if (swap.SwapType != NArk.Swaps.Models.ArkSwapType.ReverseSubmarine)
                 return;
@@ -68,9 +75,15 @@ public class ArkContractInvoiceListener(
                 : ContractActivityState.Inactive;
             await contractStorage.UpdateContractActivityState(swap.WalletId, swap.ContractScript, activityState);
         }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
             logger.LogError(ex, "Error handling swap change for {SwapId}", swap.SwapId);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inflightHandlers);
         }
     }
 
@@ -82,8 +95,12 @@ public class ArkContractInvoiceListener(
 
     private async void OnVtxoChanged(object? sender, ArkVtxo vtxo)
     {
+        Interlocked.Increment(ref _inflightHandlers);
         try
         {
+            if (_cts.IsCancellationRequested)
+                return;
+
             var terms = await clientTransport.GetServerInfoAsync();
             var serverKey = terms.SignerKey.Extract().XOnlyPubKey;
             var script = Script.FromHex(vtxo.Script);
@@ -98,7 +115,10 @@ public class ArkContractInvoiceListener(
                 var assetInv = await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadeAssetPaymentMethodId, addressStr)
                                ?? await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadePaymentMethodId, addressStr);
 
-                if (assetInv?.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId) != null)
+                if (assetInv is null || assetInv.Status != InvoiceStatus.New)
+                    return;
+
+                if (assetInv.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId) != null)
                 {
                     await HandleAssetPaymentData(vtxo, assetInv);
                 }
@@ -108,13 +128,16 @@ public class ArkContractInvoiceListener(
                 var inv = await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadePaymentMethodId, addressStr)
                           ?? await invoiceRepository.GetInvoiceFromAddress(ArkadePlugin.ArkadeAssetPaymentMethodId, addressStr);
 
-                if (inv?.GetPaymentPrompt(ArkadePlugin.ArkadePaymentMethodId) != null)
+                if (inv is null || inv.Status != InvoiceStatus.New)
+                    return;
+
+                if (inv.GetPaymentPrompt(ArkadePlugin.ArkadePaymentMethodId) != null)
                 {
                     var vtxoEntity = new VtxoEntity
                     {
                         TransactionId = vtxo.TransactionId,
                         TransactionOutputIndex = (int)vtxo.TransactionOutputIndex,
-                        Amount = (long)vtxo.Amount,
+                        Amount = checked((long)vtxo.Amount),
                         Script = vtxo.Script,
                         SeenAt = vtxo.CreatedAt
                     };
@@ -122,9 +145,15 @@ public class ArkContractInvoiceListener(
                 }
             }
         }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
         catch (Exception ex)
         {
             logger.LogError(ex, "Error handling VTXO change for {TxId}:{Index}", vtxo.TransactionId, vtxo.TransactionOutputIndex);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inflightHandlers);
         }
     }
 
@@ -163,7 +192,7 @@ public class ArkContractInvoiceListener(
         }
 
         var outpoint = $"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}";
-        var details = new ArkadeAssetPaymentData(outpoint, matchingAsset.AssetId, (long)matchingAsset.Amount);
+        var details = new ArkadeAssetPaymentData(outpoint, matchingAsset.AssetId, checked((long)matchingAsset.Amount));
 
         // Get asset metadata for proper decimal conversion
         var metadata = await assetMetadataService.GetAssetMetadata(matchingAsset.AssetId);
@@ -172,7 +201,7 @@ public class ArkContractInvoiceListener(
         for (var i = 0; i < decimals; i++) divisor *= 10m;
         var displayAmount = (decimal)matchingAsset.Amount / divisor;
 
-        await _paymentLock.WaitAsync();
+        await _paymentLock.WaitAsync(_cts.Token);
         try
         {
             var freshInvoice = await invoiceRepository.GetInvoice(invoice.Id);
@@ -219,7 +248,7 @@ public class ArkContractInvoiceListener(
         var details = new ArkadePaymentData($"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}");
 
         // Serialize payment registration to prevent duplicate inserts from concurrent VTXO events
-        await _paymentLock.WaitAsync();
+        await _paymentLock.WaitAsync(_cts.Token);
         try
         {
             // Re-fetch the invoice inside the lock to get the latest payment state
@@ -267,10 +296,26 @@ public class ArkContractInvoiceListener(
     
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        // 1. Unsubscribe first to prevent new events from firing
         vtxoStorage.VtxosChanged -= OnVtxoChanged;
         swapStorage.SwapsChanged -= OnSwapChanged;
+
+        // 2. Cancel to signal any in-flight handlers to exit
+        await _cts.CancelAsync();
+
+        // 3. Wait for in-flight async void handlers to drain before disposing resources
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (Volatile.Read(ref _inflightHandlers) > 0 && DateTimeOffset.UtcNow < deadline)
+            await Task.Delay(50, CancellationToken.None);
+
+        if (Volatile.Read(ref _inflightHandlers) > 0)
+            logger.LogWarning("Timed out waiting for {Count} in-flight event handlers to complete", _inflightHandlers);
+
+        // 4. Safe to dispose now — all handlers have exited
         _leases.Dispose();
         _leases = new CompositeDisposable();
+        _paymentLock.Dispose();
+        _cts.Dispose();
     }
 
     public async Task ToggleArkadeContract(InvoiceEntity invoice)
@@ -320,8 +365,8 @@ public class ArkContractInvoiceListener(
 
     private static DateTimeOffset GetExpiration(InvoiceEntity invoice)
     {
-        var expiredIn = DateTimeOffset.UtcNow - invoice.ExpirationTime;
-        return DateTimeOffset.UtcNow + (expiredIn >= TimeSpan.FromMinutes(5.0) ? expiredIn : TimeSpan.FromMinutes(5.0));
+        var remaining = invoice.ExpirationTime - DateTimeOffset.UtcNow;
+        return DateTimeOffset.UtcNow + (remaining >= TimeSpan.FromMinutes(5.0) ? remaining : TimeSpan.FromMinutes(5.0));
     }
 
     private string GetCacheKey(string invoiceId)
@@ -371,28 +416,28 @@ public class ArkContractInvoiceListener(
 
     private async Task PollAllInvoices(CancellationToken cancellation)
     {
-        retry:
-        if (cancellation.IsCancellationRequested)
-            return;
-        try
+        while (!cancellation.IsCancellationRequested)
         {
-            await foreach (var invoiceId in _checkInvoices.Reader.ReadAllAsync(cancellation))
+            try
             {
-                logger.LogInformation("Checking for invoice {InvoiceId}", invoiceId);
-                var invoice = await GetInvoice(invoiceId);
-                await ToggleArkadeContract(invoice);
+                await foreach (var invoiceId in _checkInvoices.Reader.ReadAllAsync(cancellation))
+                {
+                    logger.LogInformation("Checking for invoice {InvoiceId}", invoiceId);
+                    var invoice = await GetInvoice(invoiceId);
+                    await ToggleArkadeContract(invoice);
+                }
+            }
+            catch when (cancellation.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Unhandled error in the Arkade invoice listener.");
+                await Task.Delay(1000, cancellation);
             }
         }
-        catch when (cancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            await Task.Delay(1000, cancellation);
-            logger.LogWarning(ex, "Unhandled error in the Arkade invoice listener.");
-            goto retry;
-        }
-        
+
         logger.LogInformation("Exiting poll loop.");
     }
 }

@@ -24,7 +24,8 @@ public class ArkadePaymentMethodHandler(
         ArkServerInfo serverInfo;
         try
         {
-            serverInfo = await clientTransport.GetServerInfoAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            serverInfo = await clientTransport.GetServerInfoAsync(cts.Token);
         }
         catch
         {
@@ -97,5 +98,10 @@ public class ArkadePaymentMethodHandler(
 
     public void StripDetailsForNonOwner(object details)
     {
+        if (details is ArkadePromptDetails promptDetails)
+        {
+            promptDetails.WalletId = null;
+            promptDetails.ContractString = null;
+        }
     }
 }

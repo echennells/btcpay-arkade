@@ -25,13 +25,34 @@ public class ArkadeAssetPaymentMethodHandler(
 
     public async Task ConfigurePrompt(PaymentMethodContext context)
     {
+        ArkServerInfo serverInfo;
         try
         {
-            await clientTransport.GetServerInfoAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            serverInfo = await clientTransport.GetServerInfoAsync(cts.Token);
         }
         catch
         {
             throw new PaymentMethodUnavailableException("Ark operator unavailable");
+        }
+
+        // Reject invoices whose BTC equivalent is below the Ark dust threshold.
+        // Such invoices can't settle via Lightning (Boltz minimum) or Arkade BTC,
+        // and the reverse swap triggered by asset payment would also fail.
+        {
+            var price = context.InvoiceEntity.Price;
+            var currency = context.InvoiceEntity.Currency;
+            if (string.Equals(currency, "BTC", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Money.Coins(price) < serverInfo.Dust)
+                    throw new PaymentMethodUnavailableException("Amount too small");
+            }
+            else if (context.InvoiceEntity.TryGetRate("BTC", out var btcRate) && btcRate > 0)
+            {
+                var btcEquivalent = price / btcRate;
+                if (Money.Coins(btcEquivalent) < serverInfo.Dust)
+                    throw new PaymentMethodUnavailableException("Amount too small");
+            }
         }
 
         var store = context.Store;
@@ -69,20 +90,25 @@ public class ArkadeAssetPaymentMethodHandler(
             }
             else
             {
+                // Skip assets with invalid PegRate — a zero or negative rate would
+                // cause division by zero or nonsensical conversion results.
+                if (asset.PegRate <= 0)
+                    continue;
+
                 // Stablecoin: convert invoice amount to asset amount using peg rate.
                 // For same-currency (USD invoice, USDT pegged to USD): due = price / pegRate
                 // For cross-currency (USD invoice, EURT pegged to EUR): convert via forex rate
                 if (string.Equals(invoiceCurrency, asset.PegCurrency, StringComparison.OrdinalIgnoreCase))
                 {
-                    due = asset.PegRate > 0 ? invoicePrice / asset.PegRate : invoicePrice;
+                    due = invoicePrice / asset.PegRate;
                 }
                 else if (context.InvoiceEntity.TryGetRate(
                     new CurrencyPair(asset.PegCurrency, invoiceCurrency), out var crossRate) && crossRate > 0)
                 {
-                    // crossRate = pegCurrency per invoiceCurrency (e.g. EUR/USD = 0.92)
-                    // priceInPegCurrency = invoicePrice * crossRate
+                    // crossRate = price of 1 pegCurrency IN invoiceCurrency (e.g. EUR/USD = 1.09 means 1 EUR = 1.09 USD)
+                    // To convert: priceInPegCurrency = invoicePrice / crossRate
                     // due = priceInPegCurrency / pegRate
-                    due = invoicePrice * crossRate / asset.PegRate;
+                    due = invoicePrice / crossRate / asset.PegRate;
                 }
                 else
                 {
@@ -210,5 +236,10 @@ public class ArkadeAssetPaymentMethodHandler(
 
     public void StripDetailsForNonOwner(object details)
     {
+        if (details is ArkadeAssetPromptDetails promptDetails)
+        {
+            promptDetails.WalletId = null;
+            promptDetails.ContractString = null;
+        }
     }
 }

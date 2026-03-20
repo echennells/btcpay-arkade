@@ -117,7 +117,7 @@ public class SpendOutputViewModel
     /// <summary>
     /// Amount in satoshis (computed from AmountBtc).
     /// </summary>
-    public long? AmountSats => AmountBtc.HasValue ? (long)(AmountBtc.Value * 100_000_000m) : null;
+    public long? AmountSats => AmountBtc.HasValue ? (long)Math.Round(AmountBtc.Value * 100_000_000m) : null;
 
     /// <summary>
     /// Output type: Vtxo (offchain) or Onchain.
@@ -197,6 +197,16 @@ public class FeeEstimateOutput
     /// Amount in satoshis (optional).
     /// </summary>
     public long? AmountSats { get; set; }
+
+    /// <summary>
+    /// Asset ID for asset sends (optional).
+    /// </summary>
+    public string? AssetId { get; set; }
+
+    /// <summary>
+    /// Asset amount in atomic units (optional).
+    /// </summary>
+    public ulong? AssetAmount { get; set; }
 }
 
 /// <summary>
