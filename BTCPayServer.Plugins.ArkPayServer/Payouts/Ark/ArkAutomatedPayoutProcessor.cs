@@ -123,6 +123,7 @@ public class ArkAutomatedPayoutProcessor: BaseAutomatedPayoutProcessor<ArkAutoma
                         }
                         catch (Exception e)
                         {
+                            Logs.PayServer.LogError(e, "Failed to process Arkade payout {PayoutId}", payout.Id);
                         }
                     }
                     else

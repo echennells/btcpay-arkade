@@ -45,8 +45,15 @@ public class ArkadeAssetRateProvider(
 
             foreach (var asset in config.AcceptedAssets)
             {
-                var metadata = await assetMetadataService.GetAssetMetadata(asset.AssetId, cancellationToken);
-                var ticker = metadata?.Ticker ?? "ASSET";
+                // Use persisted ticker if available, only fetch metadata as fallback
+                var ticker = asset.Ticker;
+                if (string.IsNullOrEmpty(ticker))
+                {
+                    var metadata = await assetMetadataService.GetAssetMetadata(asset.AssetId, cancellationToken);
+                    ticker = metadata?.Ticker;
+                }
+                if (string.IsNullOrEmpty(ticker))
+                    continue;
 
                 if (asset.PricingMode == AssetPricingMode.Stablecoin)
                 {
