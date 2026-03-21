@@ -22,11 +22,14 @@ public class ArkadeSpendingService(
     IContractStorage contractStorage,
     PaymentMethodHandlerDictionary paymentMethodHandlerDictionary)
 {
-    public async Task<string?> Spend(StoreData store, string destination, CancellationToken cancellationToken)
+    public Task<string?> Spend(StoreData store, string destination, CancellationToken cancellationToken)
+        => Spend(store, destination, null, null, cancellationToken);
+
+    public async Task<string?> Spend(StoreData store, string destination, string? assetId, ulong? assetAmount, CancellationToken cancellationToken)
     {
         destination = destination.Trim();
         ArgumentNullException.ThrowIfNull(store);
-        
+
         var config = GetConfig<ArkadePaymentMethodConfig>(ArkadePlugin.ArkadePaymentMethodId, store);
 
         if (config?.WalletId is null)
@@ -34,10 +37,12 @@ public class ArkadeSpendingService(
 
         if (!config.GeneratedByStore)
             throw new IncompleteArkadeSetupException("Wallet does not belong to the current store.");
-        
+
         var terms = await clientTransport.GetServerInfoAsync(cancellationToken);
-        
-        if (destination.Replace("lightning:", "", StringComparison.InvariantCultureIgnoreCase) is { } lnbolt11 &&
+
+        // Asset sends are not supported over Lightning
+        if (assetId is null &&
+            destination.Replace("lightning:", "", StringComparison.InvariantCultureIgnoreCase) is { } lnbolt11 &&
             BOLT11PaymentRequest.TryParse(lnbolt11, out var bolt11, terms.Network))
         {
             if (bolt11 is null)
@@ -62,7 +67,7 @@ public class ArkadeSpendingService(
             {
                 throw new IncompleteArkadeSetupException("lightning compatibility is not enabled");
             }
-            
+
             var resp = await lnClient.Pay(bolt11.ToString(), cancellationToken);
             return resp.Result == PayResult.Ok ? null : throw new ArkadePaymentFailedException($"Payment failed: {resp?.ErrorDetail}");
         }
@@ -80,13 +85,24 @@ public class ArkadeSpendingService(
                     throw new MalformedPaymentDestination();
                 }
 
-                var amount = decimal.Parse(qs["amount"] ?? "0", CultureInfo.InvariantCulture);
-
                 try
                 {
-                    var txId = await arkadeSpender.Spend(config.WalletId, [new ArkTxOut(ArkTxOutType.Vtxo,
-                            Money.Coins(amount), address)],
-                        cancellationToken);
+                    ArkTxOut txOut;
+                    if (assetId is not null && assetAmount is not null)
+                    {
+                        // Asset VTXO: use dust BTC amount + asset metadata
+                        txOut = new ArkTxOut(ArkTxOutType.Vtxo, terms.Dust, address)
+                        {
+                            Assets = [new ArkTxOutAsset(assetId, assetAmount.Value)]
+                        };
+                    }
+                    else
+                    {
+                        var amount = decimal.Parse(qs["amount"] ?? "0", CultureInfo.InvariantCulture);
+                        txOut = new ArkTxOut(ArkTxOutType.Vtxo, Money.Coins(amount), address);
+                    }
+
+                    var txId = await arkadeSpender.Spend(config.WalletId, [txOut], cancellationToken);
 
                     // Poll for VTXO updates on active contracts
                     var activeContracts = await contractStorage.GetContracts(walletIds: [config.WalletId], isActive: true, cancellationToken: cancellationToken);

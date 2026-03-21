@@ -114,6 +114,10 @@ public class ArkadePlugin : BaseBTCPayServerPlugin
         // Rate provider for Arkade assets (stablecoin pegs + store coin identity rates)
         services.AddSingleton<ArkadeAssetRateProvider>();
         services.AddSingleton<IRateProvider>(sp => sp.GetRequiredService<ArkadeAssetRateProvider>());
+
+        // Register store coin tickers as recognized currencies
+        services.AddSingleton<ArkadeCurrencyDataProvider>();
+        services.AddSingleton<CurrencyDataProvider>(sp => sp.GetRequiredService<ArkadeCurrencyDataProvider>());
     }
 
     private static void RegisterDatabase(IServiceCollection services)

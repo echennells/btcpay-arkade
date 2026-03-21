@@ -23,7 +23,9 @@ public record AcceptedAsset(
     string? DisplayName = null,
     AssetPricingMode PricingMode = AssetPricingMode.Stablecoin,
     string PegCurrency = "USD",
-    decimal PegRate = 1m);
+    decimal PegRate = 1m,
+    string? Ticker = null,
+    int? Decimals = null);
 
 public record ArkadePaymentMethodConfig(
     string WalletId,

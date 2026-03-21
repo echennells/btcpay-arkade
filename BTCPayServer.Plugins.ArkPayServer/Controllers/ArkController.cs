@@ -1961,15 +1961,19 @@ public class ArkController(
         if (!Enum.TryParse<AssetPricingMode>(pricingMode, out var mode))
             mode = AssetPricingMode.Stablecoin;
 
-        // Try to fetch metadata for display name
+        // Try to fetch metadata for display name, ticker, and decimals
         string? displayName = null;
+        string? ticker = null;
+        int? decimals = null;
         try
         {
             var details = await clientTransport.GetAssetDetailsAsync(assetId, cancellationToken);
             if (details?.Metadata != null)
             {
                 details.Metadata.TryGetValue("name", out var name);
-                details.Metadata.TryGetValue("ticker", out var ticker);
+                details.Metadata.TryGetValue("ticker", out ticker);
+                details.Metadata.TryGetValue("decimals", out var decimalsStr);
+                if (int.TryParse(decimalsStr, out var d)) decimals = d;
                 displayName = !string.IsNullOrEmpty(name) ? $"{name} ({ticker})" : ticker;
             }
         }
@@ -1979,7 +1983,7 @@ public class ArkController(
                 $"Warning: asset added but metadata could not be fetched: {ex.Message}";
         }
 
-        assets.Add(new AcceptedAsset(assetId, displayName, mode, pegCurrency.Trim().ToUpperInvariant()));
+        assets.Add(new AcceptedAsset(assetId, displayName, mode, pegCurrency.Trim().ToUpperInvariant(), Ticker: ticker, Decimals: decimals));
         var newConfig = config with { AcceptedAssets = assets };
         store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
 
@@ -1988,7 +1992,11 @@ public class ArkController(
             paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId],
             new { Enabled = true });
 
+        // Register store coin tickers as currencies and set up rate rules
+        ArkadeStoreCoinHelper.UpdateStoreCoinRateRules(store, newConfig);
+
         await storeRepository.UpdateStore(store);
+        await ArkadeStoreCoinHelper.ReloadCurrencies(HttpContext.RequestServices);
 
         TempData[WellKnownTempData.SuccessMessage] = $"Asset {displayName ?? assetId} added.";
         return RedirectToAction(nameof(StoreOverview), new { storeId });
@@ -2019,7 +2027,11 @@ public class ArkController(
             store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], null);
         }
 
+        // Update rate rules for remaining store coins
+        ArkadeStoreCoinHelper.UpdateStoreCoinRateRules(store, newConfig);
+
         await storeRepository.UpdateStore(store);
+        await ArkadeStoreCoinHelper.ReloadCurrencies(HttpContext.RequestServices);
 
         TempData[WellKnownTempData.SuccessMessage] = "Asset removed.";
         return RedirectToAction(nameof(StoreOverview), new { storeId });
