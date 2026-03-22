@@ -5,6 +5,7 @@ using NArk.Core;
 using NArk.Abstractions.Wallets;
 using NArk.Core.Services;
 using NArk.Core.Transport;
+using NArk.Swaps.Boltz;
 using NBitcoin;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -14,7 +15,8 @@ namespace BTCPayServer.Plugins.ArkPayServer.PaymentHandler;
 public class ArkadePaymentMethodHandler(
     BTCPayServerEnvironment btcPayServerEnvironment,
     IContractService contractService,
-    IClientTransport clientTransport
+    IClientTransport clientTransport,
+    BoltzLimitsValidator? boltzLimitsValidator = null
 ) : IPaymentMethodHandler
 {
     public PaymentMethodId PaymentMethodId => ArkadePlugin.ArkadePaymentMethodId;
@@ -41,7 +43,8 @@ public class ArkadePaymentMethodHandler(
 
         if (!arkadePaymentMethodConfig.AllowSubDustAmounts && Money.Coins(context.Prompt.Calculate().Due) < serverInfo.Dust)
         {
-            throw new PaymentMethodUnavailableException("Amount too small");
+            var dustSats = serverInfo.Dust.ToUnit(MoneyUnit.Satoshi);
+            throw new PaymentMethodUnavailableException($"Amount below minimum ({dustSats} sats)");
         }
 
         var contract = await contractService.DeriveContract(
@@ -60,11 +63,48 @@ public class ArkadePaymentMethodHandler(
         context.Prompt.Details = JObject.FromObject(details, Serializer);
     }
 
-    public Task BeforeFetchingRates(PaymentMethodContext context)
+    public async Task BeforeFetchingRates(PaymentMethodContext context)
     {
         context.Prompt.Currency = "BTC";
         context.Prompt.Divisibility = 8;
-        return Task.CompletedTask;
+
+        // Inject PaymentMethodCriteria for BTC-LNURL so BTCPay's built-in CheckCriteria
+        // rejects it for amounts below the Boltz reverse swap minimum.
+        // LNURL uses the same Arkade Lightning backend as BTC-LN, but its ConfigurePrompt
+        // doesn't check amounts — it only creates a LNURL endpoint. Without this criteria,
+        // LNURL would activate for small invoices that can never be fulfilled.
+        if (boltzLimitsValidator != null)
+        {
+            try
+            {
+                var limits = await boltzLimitsValidator.GetLimitsAsync(isReverse: true);
+                if (limits != null)
+                {
+                    var lnurlId = PaymentTypes.LNURL.GetPaymentMethodId("BTC");
+                    var minBtc = Money.Satoshis(limits.MinAmount).ToDecimal(MoneyUnit.BTC);
+                    var criteria = context.StoreBlob.PaymentMethodCriteria;
+
+                    if (!criteria.Any(c => c.PaymentMethod == lnurlId))
+                    {
+                        // Atomic: assign a new list so concurrent enumerators on the old list are safe
+                        var updated = new List<PaymentMethodCriteria>(criteria)
+                        {
+                            new()
+                            {
+                                PaymentMethod = lnurlId,
+                                Value = new CurrencyValue { Value = minBtc, Currency = "BTC" },
+                                Above = true
+                            }
+                        };
+                        context.StoreBlob.PaymentMethodCriteria = updated;
+                    }
+                }
+            }
+            catch
+            {
+                // If Boltz limits are unavailable, don't block invoice creation
+            }
+        }
     }
 
     public JsonSerializer Serializer { get; } = BlobSerializer.CreateSerializer().Serializer;
