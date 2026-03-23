@@ -22,18 +22,12 @@ public static class ArkadeStoreCoinHelper
     {
         var blob = store.GetStoreBlob();
 
-        // Only stablecoins need fallback rate rules — they need BTCPay to query
-        // arkadeassets for cross-rates like BTC_ERICUSDT (derived via ERICUSDT_USD peg).
-        // Store coins (BEPSI) have no BTC rate and should NOT be in rate rules.
-        var stablecoinTickers = config?.AcceptedAssets?
+        var stablecoins = config?.AcceptedAssets?
             .Where(a => a.PricingMode == AssetPricingMode.Stablecoin && !string.IsNullOrEmpty(a.Ticker))
-            .Select(a => a.Ticker!.ToUpperInvariant())
-            .Distinct()
-            .ToList() ?? new List<string>();
+            .ToList() ?? new List<AcceptedAsset>();
 
-        if (stablecoinTickers.Count == 0)
+        if (stablecoins.Count == 0)
         {
-            // Remove our fallback if no stablecoins remain
             if (blob.FallbackRateSettings?.RateScript?.Contains(RuleMarker) == true)
             {
                 blob.FallbackRateSettings = null;
@@ -42,14 +36,24 @@ public static class ArkadeStoreCoinHelper
             return;
         }
 
-        // Route stablecoin ticker pairs to our provider so BTCPay can resolve
-        // cross-rates like BTC_ERICUSDT. The X_X catchall ensures non-asset
-        // pairs (like BTC_USD) still resolve via coingecko.
+        // For each stablecoin we need two rules:
+        //   ERICUSDT_X = arkadeassets(ERICUSDT_X)  → provides ERICUSDT_USD = pegRate
+        //   BTC_ERICUSDT = coingecko(BTC_USD)      → derives BTC cross-rate for payout approval
+        // The X_X catchall resolves BTC_USD etc. via coingecko.
         var rules = new List<string> { RuleMarker };
-        foreach (var ticker in stablecoinTickers)
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var asset in stablecoins)
         {
+            var ticker = asset.Ticker!.ToUpperInvariant();
+            if (!seen.Add(ticker))
+                continue;
+            var pegCurrency = (asset.PegCurrency ?? "USD").ToUpperInvariant();
             rules.Add($"{ticker}_X = arkadeassets({ticker}_X);");
-            rules.Add($"X_{ticker} = arkadeassets(X_{ticker});");
+            if (asset.PegRate == 1m)
+                rules.Add($"BTC_{ticker} = kraken(BTC_{pegCurrency});");
+            else
+                rules.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "BTC_{0} = kraken(BTC_{1}) / {2};", ticker, pegCurrency, asset.PegRate));
         }
         rules.Add("X_X = coingecko(X_X);");
 

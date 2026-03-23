@@ -1,7 +1,7 @@
 using BTCPayServer.Abstractions.Contracts;
 using BTCPayServer.Client.Models;
 using BTCPayServer.Data;
-using BTCPayServer.HostedServices;
+
 using BTCPayServer.PayoutProcessors;
 using BTCPayServer.Payouts;
 using BTCPayServer.Plugins.ArkPayServer.PaymentHandler;
@@ -47,50 +47,6 @@ public class ArkAutomatedPayoutProcessor: BaseAutomatedPayoutProcessor<ArkAutoma
         _payoutMethodHandlers = payoutMethodHandlers;
         _paymentHandlers = paymentHandlers;
         _jsonSerializerSettings = jsonSerializerSettings;
-    }
-
-    protected override async Task<bool> ProcessShouldSave(object paymentMethodConfig, List<PayoutData> payouts)
-    {
-        // Also pick up AwaitingApproval payouts for store coin assets.
-        // Store coins have no BTC rate, so BTCPay's auto-approval fails.
-        // We approve them here by setting the amount directly.
-        await using var ctx = _applicationDbContextFactory.CreateContext();
-        var pendingApproval = await PullPaymentHostedService.GetPayouts(
-            new PullPaymentHostedService.PayoutQuery()
-            {
-                States = new[] { PayoutState.AwaitingApproval },
-                PayoutMethods = new[] { PayoutProcessorSettings.PayoutMethodId },
-                Stores = new[] { PayoutProcessorSettings.StoreId }
-            }, ctx, CancellationToken);
-
-        if (pendingApproval.Any())
-        {
-            var storeData = await _storeRepository.FindStore(PayoutProcessorSettings.StoreId);
-            var arkConfig = storeData?.GetPaymentMethodConfig<ArkadePaymentMethodConfig>(
-                ArkadePlugin.ArkadePaymentMethodId, _paymentHandlers);
-
-            foreach (var payout in pendingApproval)
-            {
-                // Only auto-approve if this is a store coin asset payout
-                if (payout.OriginalCurrency is null || payout.OriginalCurrency == "BTC")
-                    continue;
-                var matchedAsset = arkConfig?.AcceptedAssets?.FirstOrDefault(a =>
-                    string.Equals(a.Ticker, payout.OriginalCurrency, StringComparison.OrdinalIgnoreCase));
-                if (matchedAsset is null || matchedAsset.PricingMode != AssetPricingMode.StoreCoin)
-                    continue;
-
-                // Approve: amount passes through as-is (store coin, no conversion)
-                payout.State = PayoutState.AwaitingPayment;
-                payout.Amount = payout.OriginalAmount;
-                payouts.Add(payout);
-                Logs.PayServer.LogInformation("Auto-approved store coin payout {PayoutId} ({Amount} {Currency})",
-                    payout.Id, payout.OriginalAmount, payout.OriginalCurrency);
-            }
-            await ctx.SaveChangesAsync();
-        }
-
-        await Process(paymentMethodConfig, payouts);
-        return true;
     }
 
     protected override async Task Process(object paymentMethodConfig, List<PayoutData> payouts)

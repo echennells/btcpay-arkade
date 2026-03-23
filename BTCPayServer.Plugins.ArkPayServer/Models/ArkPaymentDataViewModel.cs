@@ -8,4 +8,7 @@ public class ArkPaymentDataViewModel
     public string Address { get; set; }
     public DateTimeOffset ReceivedTime { get; set; }
     public string Currency { get; set; }
+    public bool IsMismatchedAsset { get; set; }
+    public string ReceivedTicker { get; set; }
+    public string ExpectedAssetIds { get; set; }
 }

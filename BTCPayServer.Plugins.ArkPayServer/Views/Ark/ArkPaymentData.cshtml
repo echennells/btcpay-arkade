@@ -13,25 +13,46 @@
 
 
 @{
-	
-	
-	
 	var payments = Model.Payments.Select(payment =>
 	{
-		if (!handlers.TryGetValue(payment.PaymentMethodId, out var h) || h is not ArkadePaymentMethodHandler handler)
+		if (!handlers.TryGetValue(payment.PaymentMethodId, out var h))
 			return null;
-		var paymentData = handler.ParsePaymentDetails(payment.Details);
-		var promptDetails = handler.ParsePaymentPromptDetails(Model.Entity.GetPaymentPrompt(payment.PaymentMethodId)?.Details);
-		var vm = new ArkPaymentDataViewModel
+
+		if (h is ArkadePaymentMethodHandler handler)
 		{
-			Address = payment.Destination,
-			Amount = payment.Value.ToString(CultureInfo.InvariantCulture),
-			Outpoint = paymentData.Outpoint,
-			ReceivedTime = payment.ReceivedTime,
-			Contract = promptDetails.ContractString,
-			Currency = payment.Currency
-		};
-		return vm;
+			var paymentData = handler.ParsePaymentDetails(payment.Details);
+			var promptDetails = handler.ParsePaymentPromptDetails(Model.Entity.GetPaymentPrompt(payment.PaymentMethodId)?.Details);
+			return new ArkPaymentDataViewModel
+			{
+				Address = payment.Destination,
+				Amount = payment.Value.ToString(CultureInfo.InvariantCulture),
+				Outpoint = paymentData.Outpoint,
+				ReceivedTime = payment.ReceivedTime,
+				Contract = promptDetails.ContractString,
+				Currency = payment.Currency
+			};
+		}
+
+		if (h is ArkadeAssetPaymentMethodHandler assetHandler)
+		{
+			var assetData = assetHandler.ParsePaymentDetails(payment.Details);
+			var prompt = Model.Entity.GetPaymentPrompt(payment.PaymentMethodId);
+			var promptDetails = prompt != null ? assetHandler.ParsePaymentPromptDetails(prompt.Details) : null;
+			return new ArkPaymentDataViewModel
+			{
+				Address = payment.Destination,
+				Amount = payment.Value.ToString(CultureInfo.InvariantCulture),
+				Outpoint = assetData.Outpoint,
+				ReceivedTime = payment.ReceivedTime,
+				Contract = promptDetails?.ContractString,
+				Currency = assetData.IsMismatchedAsset ? (assetData.ReceivedTicker ?? "unknown") : payment.Currency,
+				IsMismatchedAsset = assetData.IsMismatchedAsset,
+				ReceivedTicker = assetData.ReceivedTicker,
+				ExpectedAssetIds = assetData.ExpectedAssetIds
+			};
+		}
+
+		return null;
 	}).Where(c => c != null).ToList();
 }
 
@@ -55,20 +76,36 @@
             {
 	            var addrLink = ArkadeLinkHelper.GetAddressLink(ArkNetworkConfig, payment.Address);
 	            var outpointLink = ArkadeLinkHelper.GetOutpointLink(ArkNetworkConfig, payment.Outpoint);
-                <tr >
+                <tr>
 	                <td>
-		                <vc:truncate-center text="@payment.Address" link="@addrLink"  classes="truncate-center-id" />
-		                
+		                <vc:truncate-center text="@payment.Address" link="@addrLink" classes="truncate-center-id" />
 	                </td>
-	                <td><vc:truncate-center text="@payment.Outpoint" link="@outpointLink"  classes="truncate-center-id" /></td>
+	                <td><vc:truncate-center text="@payment.Outpoint" link="@outpointLink" classes="truncate-center-id" /></td>
 	                <td>@payment.ReceivedTime.ToBrowserDate()</td>
-	                <td>  <vc:truncate-center text="@payment.Contract"  classes="truncate-center-id" /></td>
-	                
-                    
+	                <td><vc:truncate-center text="@payment.Contract" classes="truncate-center-id" /></td>
                     <td class="payment-value text-end text-nowrap">
-                        <span data-sensitive class="text-success">@DisplayFormatter.Currency(payment.Amount, payment.Currency)</span>
+                        @if (payment.IsMismatchedAsset)
+                        {
+                            <span data-sensitive class="text-danger">@DisplayFormatter.Currency(payment.Amount, payment.Currency)</span>
+                            <span class="badge bg-danger ms-1" title="Customer sent @payment.ReceivedTicker but the invoice expected a different asset">Wrong asset</span>
+                        }
+                        else
+                        {
+                            <span data-sensitive class="text-success">@DisplayFormatter.Currency(payment.Amount, payment.Currency)</span>
+                        }
                     </td>
                 </tr>
+                @if (payment.IsMismatchedAsset)
+                {
+                    <tr>
+                        <td colspan="5">
+                            <div class="alert alert-danger py-1 px-2 mb-0 small">
+                                <strong>Wrong asset received:</strong> Customer sent <strong>@(payment.ReceivedTicker ?? "unknown asset")</strong>.
+                                This payment was not credited to the invoice. The funds are in your Ark wallet and can be returned manually.
+                            </div>
+                        </td>
+                    </tr>
+                }
             }
             </tbody>
         </table>

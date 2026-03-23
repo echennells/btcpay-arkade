@@ -1,6 +1,7 @@
 using BTCPayServer.Data;
 using BTCPayServer.Payments;
 using BTCPayServer.Plugins.ArkPayServer.Lightning;
+using BTCPayServer.Services.Invoices;
 using Newtonsoft.Json.Linq;
 
 namespace BTCPayServer.Plugins.ArkPayServer.PaymentHandler;
@@ -60,6 +61,24 @@ public class ArkadeAssetCheckoutModelExtension : ICheckoutModelExtension
                 paymentLinks[option.AssetId] = link;
             }
             context.Model.AdditionalData["assetPaymentLinks"] = JToken.FromObject(paymentLinks);
+        }
+
+        // Check for mismatched asset payments so the checkout page can warn the customer
+        var mismatchedPayments = context.InvoiceEntity.GetPayments(false)
+            .Where(p => p.PaymentMethodId == ArkadePlugin.ArkadeAssetPaymentMethodId
+                        && p.Status == PaymentStatus.Unaccounted)
+            .Select(p =>
+            {
+                var details = handler.ParsePaymentDetails(p.Details);
+                if (!details.IsMismatchedAsset) return null;
+                return new { ticker = details.ReceivedTicker ?? "unknown", amount = p.Value };
+            })
+            .Where(x => x != null)
+            .ToList();
+
+        if (mismatchedPayments.Count > 0)
+        {
+            context.Model.AdditionalData["mismatchedPayments"] = JToken.FromObject(mismatchedPayments);
         }
     }
 }

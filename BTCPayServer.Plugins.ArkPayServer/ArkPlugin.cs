@@ -12,6 +12,7 @@ using BTCPayServer.Plugins.ArkPayServer.PaymentHandler;
 using BTCPayServer.Plugins.ArkPayServer.Payouts.Ark;
 using BTCPayServer.Plugins.ArkPayServer.Services;
 using BTCPayServer.Services.Rates;
+using BTCPayServer.Services.Reporting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NArk.Abstractions.Blockchain;
@@ -75,6 +76,9 @@ public class ArkadePlugin : BaseBTCPayServerPlugin
 
         // Boltz swap services (optional)
         RegisterBoltzServices(services, networkConfig);
+
+        // Auto-approve asset payouts that BTCPay can't approve (no BTC rate for store coins)
+        services.AddSingleton<IPluginHookAction, AssetPayoutApprovalHook>();
     }
 
     #region Service Registration
@@ -114,6 +118,10 @@ public class ArkadePlugin : BaseBTCPayServerPlugin
         // Rate provider for Arkade assets (stablecoin pegs + store coin identity rates)
         services.AddSingleton<ArkadeAssetRateProvider>();
         services.AddSingleton<IRateProvider>(sp => sp.GetRequiredService<ArkadeAssetRateProvider>());
+
+        // Exceptions report for wrong-asset payments
+        services.AddSingleton<ArkadeExceptionsReportProvider>();
+        services.AddSingleton<ReportProvider>(sp => sp.GetRequiredService<ArkadeExceptionsReportProvider>());
 
         // Register store coin tickers as recognized currencies
         services.AddSingleton<ArkadeCurrencyDataProvider>();

@@ -39,6 +39,15 @@
         </div>
         <a v-if="currentPaymentLink && model.showPayInWalletButton" class="btn btn-primary rounded-pill w-100 mt-4" id="PayInWallet" target="_blank"
            :href="currentPaymentLink" :title="$t('Arkade payment link')" v-t="'pay_in_wallet'"></a>
+
+        <!-- Wrong asset warning -->
+        <div v-if="mismatchedPayments && mismatchedPayments.length > 0" class="alert alert-danger mt-3 py-2 px-3 small" role="alert">
+            <strong>Wrong asset received</strong>
+            <div v-for="mp in mismatchedPayments" :key="mp.ticker">
+                You sent <strong>{{ mp.amount }} {{ mp.ticker }}</strong> but this invoice expects a different asset.
+                This payment will not be credited. Please contact the merchant for a refund.
+            </div>
+        </div>
     </div>
 </template>
 
@@ -55,7 +64,9 @@
             return {
                 assetOptions: options,
                 selectedAssetId: defaultId,
-                paymentLinks: this.model.assetPaymentLinks || {}
+                paymentLinks: this.model.assetPaymentLinks || {},
+                mismatchedPayments: this.model.mismatchedPayments || [],
+                pollId: null
             };
         },
         computed: {
@@ -74,6 +85,17 @@
                 return link.toUpperCase().replace('BITCOIN:', 'bitcoin:').replace('ARK=', 'ark=');
             }
         },
+        mounted: function() {
+            // BTCPay skips fetchData for plugin payment methods, so we poll ourselves
+            // to detect mismatched asset payments while the checkout page is open.
+            var self = this;
+            if (typeof statusUrl !== 'undefined') {
+                this.pollId = setInterval(function() { self.checkForMismatch(); }, 5000);
+            }
+        },
+        beforeDestroy: function() {
+            if (this.pollId) clearInterval(this.pollId);
+        },
         methods: {
             selectAsset: function(assetId) {
                 this.selectedAssetId = assetId;
@@ -81,6 +103,15 @@
             formatAmount: function(amount, decimals) {
                 if (typeof amount !== 'number') return amount;
                 return decimals > 0 ? amount.toFixed(decimals) : amount.toString();
+            },
+            checkForMismatch: function() {
+                var self = this;
+                var url = statusUrl + '&paymentMethodId=ARKADE_ASSET';
+                fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+                    if (data && data.mismatchedPayments) {
+                        self.mismatchedPayments = data.mismatchedPayments;
+                    }
+                }).catch(function() {});
             }
         }
     });

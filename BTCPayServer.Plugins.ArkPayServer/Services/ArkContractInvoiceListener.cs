@@ -184,15 +184,21 @@ public class ArkContractInvoiceListener(
             : new HashSet<string> { promptDetails.AssetId };
 
         var matchingAsset = vtxo.Assets?.FirstOrDefault(a => acceptedAssetIds.Contains(a.AssetId));
-        if (matchingAsset is null)
+        var isMismatch = matchingAsset is null;
+
+        if (isMismatch)
         {
-            logger.LogWarning("No matching asset in VTXO {TxId}:{Index}. Expected one of: {ExpectedAssetIds}",
-                vtxo.TransactionId, vtxo.TransactionOutputIndex, string.Join(", ", acceptedAssetIds));
-            return;
+            // Wrong asset sent — record it as Unaccounted so it shows on the invoice
+            // and in the Exceptions report, but doesn't satisfy the invoice.
+            matchingAsset = vtxo.Assets?.FirstOrDefault();
+            if (matchingAsset is null)
+                return;
+
+            logger.LogWarning("Mismatched asset in VTXO {TxId}:{Index}. Received {ReceivedAssetId}, expected one of: {ExpectedAssetIds}",
+                vtxo.TransactionId, vtxo.TransactionOutputIndex, matchingAsset.AssetId, string.Join(", ", acceptedAssetIds));
         }
 
         var outpoint = $"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}";
-        var details = new ArkadeAssetPaymentData(outpoint, matchingAsset.AssetId, checked((long)matchingAsset.Amount));
 
         // Get asset metadata for proper decimal conversion
         var metadata = await assetMetadataService.GetAssetMetadata(matchingAsset.AssetId);
@@ -201,6 +207,13 @@ public class ArkContractInvoiceListener(
         for (var i = 0; i < decimals; i++) divisor *= 10m;
         var displayAmount = (decimal)matchingAsset.Amount / divisor;
 
+        var details = isMismatch
+            ? new ArkadeAssetPaymentData(outpoint, matchingAsset.AssetId, checked((long)matchingAsset.Amount),
+                IsMismatchedAsset: true,
+                ReceivedTicker: metadata?.Ticker,
+                ExpectedAssetIds: string.Join(", ", acceptedAssetIds))
+            : new ArkadeAssetPaymentData(outpoint, matchingAsset.AssetId, checked((long)matchingAsset.Amount));
+
         await _paymentLock.WaitAsync(_cts.Token);
         try
         {
@@ -208,13 +221,20 @@ public class ArkContractInvoiceListener(
             if (freshInvoice is null) return;
 
             var pmi = ArkadePlugin.ArkadeAssetPaymentMethodId;
+
+            // For mismatched assets, use the prompt's currency so UpdateTotals doesn't
+            // throw on a missing rate. The actual received asset info is in the details.
+            var paymentCurrency = isMismatch
+                ? (prompt.Currency ?? "ASSET")
+                : (metadata?.Ticker ?? "ASSET");
+
             var paymentData = new PaymentData
             {
-                Status = PaymentStatus.Settled,
+                Status = isMismatch ? PaymentStatus.Unaccounted : PaymentStatus.Settled,
                 Amount = displayAmount,
                 Created = vtxo.CreatedAt,
                 Id = outpoint,
-                Currency = metadata?.Ticker ?? "ASSET",
+                Currency = paymentCurrency,
             }.Set(freshInvoice, arkadeAssetPaymentMethodHandler, details);
 
             var existing = freshInvoice
@@ -224,10 +244,10 @@ public class ArkContractInvoiceListener(
             if (existing == null)
             {
                 var payment = await paymentService.AddPayment(paymentData);
-                if (payment != null)
+                if (payment != null && !isMismatch)
                     await ReceivedPayment(freshInvoice, payment);
             }
-            else
+            else if (!isMismatch)
             {
                 existing.Status = PaymentStatus.Settled;
                 existing.Details = JToken.FromObject(details, arkadeAssetPaymentMethodHandler.Serializer);
