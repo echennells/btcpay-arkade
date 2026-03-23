@@ -65,15 +65,11 @@ public class ArkadeAssetRateProvider(
                 else
                 {
                     // Store coin: identity rate, ticker to itself
-                    // The invoice will be denominated directly in the asset
+                    // The invoice will be denominated directly in the asset.
+                    // We intentionally do NOT provide BTC↔TICKER rates here — that would
+                    // make BTCPay think 1 BEPSI = 1 BTC when pricing invoices.
                     var pair = new CurrencyPair(ticker, ticker);
                     rates.Add(new PairRate(pair, new BidAsk(1m)));
-
-                    // Also provide BTC↔TICKER identity rates so payout approval can
-                    // find a rate (the payout handler's network is BTC, but the pull
-                    // payment is denominated in the store coin ticker).
-                    rates.Add(new PairRate(new CurrencyPair("BTC", ticker), new BidAsk(1m)));
-                    rates.Add(new PairRate(new CurrencyPair(ticker, "BTC"), new BidAsk(1m)));
                 }
             }
         }

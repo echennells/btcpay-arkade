@@ -19,9 +19,7 @@ using BTCPayServer.Plugins.ArkPayServer.Payouts.Ark;
 using BTCPayServer.Plugins.ArkPayServer.Services;
 using BTCPayServer.Security;
 using BTCPayServer.Services.Invoices;
-using BTCPayServer.Services.Rates;
 using BTCPayServer.Services.Stores;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -1994,12 +1992,9 @@ public class ArkController(
             paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId],
             new { Enabled = true });
 
+        ArkadeStoreCoinHelper.EnsureFallbackRateRules(store, newConfig);
         await storeRepository.UpdateStore(store);
-
-        // Reload currency table so the new ticker is recognized immediately
-        var currencyNameTable = HttpContext.RequestServices.GetService<CurrencyNameTable>();
-        if (currencyNameTable != null)
-            await currencyNameTable.ReloadCurrencyData(CancellationToken.None);
+        await ArkadeStoreCoinHelper.ReloadCurrencies(HttpContext.RequestServices);
 
         TempData[WellKnownTempData.SuccessMessage] = $"Asset {displayName ?? assetId} added.";
         return RedirectToAction(nameof(StoreOverview), new { storeId });
@@ -2030,12 +2025,9 @@ public class ArkController(
             store.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadeAssetPaymentMethodId], null);
         }
 
+        ArkadeStoreCoinHelper.EnsureFallbackRateRules(store, newConfig);
         await storeRepository.UpdateStore(store);
-
-        // Reload currency table so removed tickers are updated
-        var currencyNameTable = HttpContext.RequestServices.GetService<CurrencyNameTable>();
-        if (currencyNameTable != null)
-            await currencyNameTable.ReloadCurrencyData(CancellationToken.None);
+        await ArkadeStoreCoinHelper.ReloadCurrencies(HttpContext.RequestServices);
 
         TempData[WellKnownTempData.SuccessMessage] = "Asset removed.";
         return RedirectToAction(nameof(StoreOverview), new { storeId });

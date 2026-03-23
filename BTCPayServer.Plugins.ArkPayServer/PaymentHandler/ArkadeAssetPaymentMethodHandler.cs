@@ -142,7 +142,8 @@ public class ArkadeAssetPaymentMethodHandler(
         {
             if (invoicePrice <= 0m)
                 throw new PaymentMethodUnavailableException("Invoice price must be positive for asset payment");
-            context.InvoiceEntity.AddRate(new CurrencyPair(primaryOption.Ticker, invoiceCurrency), 1m);
+            // Rate BEPSI_BEPSI = 1 is already provided by ArkadeAssetRateProvider
+            // and resolved during BeforeFetchingRates — no need to inject it again.
         }
 
         var contract = await contractService.DeriveContract(
@@ -177,8 +178,26 @@ public class ArkadeAssetPaymentMethodHandler(
         if (arkadeConfig?.AcceptedAssets is not { Count: > 0 })
             return;
 
-        // Request rates for ALL stablecoin asset tickers so BTCPay fetches forex rates
-        // we need for cross-currency conversion (e.g. USD invoice → EURT pegged to EUR).
+        // If the invoice is denominated in a store coin, set prompt currency to that
+        // ticker so BTCPay fetches TICKER_TICKER = 1 (identity) instead of trying
+        // ERICUSDT_TICKER which doesn't exist.
+        var invoiceCurrency = context.InvoiceEntity.Currency;
+        foreach (var asset in arkadeConfig.AcceptedAssets)
+        {
+            if (asset.PricingMode != AssetPricingMode.StoreCoin)
+                continue;
+            var meta = await assetMetadataService.GetAssetMetadata(asset.AssetId);
+            var ticker = meta?.Ticker;
+            if (ticker != null && string.Equals(ticker, invoiceCurrency, StringComparison.OrdinalIgnoreCase))
+            {
+                context.Prompt.Currency = ticker;
+                context.Prompt.Divisibility = meta?.Decimals ?? 0;
+                return; // store coin invoice — no stablecoin rates needed
+            }
+        }
+
+        // Non-store-coin invoice: request rates for stablecoin tickers so BTCPay
+        // fetches cross-rates (e.g. USD invoice → ERICUSDT pegged to USD).
         bool primarySet = false;
         foreach (var asset in arkadeConfig.AcceptedAssets)
         {
@@ -190,19 +209,15 @@ public class ArkadeAssetPaymentMethodHandler(
 
             if (!primarySet)
             {
-                // First stablecoin sets the prompt currency (BTCPay auto-adds it to RequiredRates)
                 context.Prompt.Currency = ticker;
                 context.Prompt.Divisibility = metadata?.Decimals ?? 0;
                 primarySet = true;
             }
             else
             {
-                // Additional stablecoins: explicitly request their rates
                 context.RequiredRates.Add(ticker);
             }
         }
-        // For store coins only: leave currency null here. We inject it in ConfigurePrompt
-        // to avoid BTCPay trying to fetch rates for a non-existent pair.
     }
 
     public JsonSerializer Serializer { get; } = BlobSerializer.CreateSerializer().Serializer;
