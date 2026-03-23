@@ -36,6 +36,7 @@ public record ArkadePromptDetails
 
     public string? WalletId { get; set; }
     public string? ContractString { get; set; }
+    public string? BoardingAddress { get; init; }
 
     /// <summary>
     /// Parses the contract with the specified network.
