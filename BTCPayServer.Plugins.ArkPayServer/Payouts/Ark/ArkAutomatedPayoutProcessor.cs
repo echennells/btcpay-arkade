@@ -108,7 +108,7 @@ public class ArkAutomatedPayoutProcessor: BaseAutomatedPayoutProcessor<ArkAutoma
                                 // Asset payout: convert display amount to native units
                                 var decimals = matchedAsset.Decimals ?? 0;
                                 var multiplier = (decimal)Math.Pow(10, decimals);
-                                var nativeAmount = (ulong)(payout.OriginalAmount * multiplier);
+                                var nativeAmount = checked((ulong)(payout.OriginalAmount * multiplier));
 
                                 txId = await _arkSpendingService.Spend(storeData, destinationBip21,
                                     matchedAsset.AssetId, nativeAmount, CancellationToken.None);

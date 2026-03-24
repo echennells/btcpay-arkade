@@ -151,6 +151,14 @@ public class ArkContractInvoiceListener(
                 return;
             }
 
+            // BTC sats sent to an asset-only invoice — record as Unaccounted mismatch
+            if (!hasAssets && inv.GetPaymentPrompt(ArkadePlugin.ArkadePaymentMethodId) == null
+                && inv.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId) != null)
+            {
+                await HandleBtcOnAssetInvoice(vtxo, inv);
+                return;
+            }
+
             // Boarding payments: Processing until confirmed, then Settled
             var isConfirmed = !isBoarding || vtxo.Metadata?.GetValueOrDefault("Confirmed") == "True";
 
@@ -272,6 +280,61 @@ public class ArkContractInvoiceListener(
                 existing.Status = PaymentStatus.Settled;
                 existing.Details = JToken.FromObject(details, arkadeAssetPaymentMethodHandler.Serializer);
                 await paymentService.UpdatePayments([existing]);
+            }
+        }
+        finally
+        {
+            _paymentLock.Release();
+        }
+
+        eventAggregator.Publish(new InvoiceNeedUpdateEvent(invoice.Id));
+    }
+
+    private async Task HandleBtcOnAssetInvoice(ArkVtxo vtxo, InvoiceEntity invoice)
+    {
+        var prompt = invoice.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId);
+        if (prompt is null) return;
+
+        var promptDetails = arkadeAssetPaymentMethodHandler.ParsePaymentPromptDetails(prompt.Details);
+
+        var acceptedAssetIds = promptDetails.AssetOptions is { Count: > 0 }
+            ? promptDetails.AssetOptions.Select(o => o.AssetId).ToHashSet()
+            : new HashSet<string> { promptDetails.AssetId };
+
+        var outpoint = $"{vtxo.TransactionId}:{vtxo.TransactionOutputIndex}";
+        var satAmount = (long)vtxo.Amount;
+        var btcAmount = Money.Satoshis(satAmount).ToDecimal(MoneyUnit.BTC);
+
+        logger.LogWarning("BTC sats sent to asset invoice {InvoiceId}. Received {SatAmount} sats, expected asset(s): {ExpectedAssetIds}",
+            invoice.Id, satAmount, string.Join(", ", acceptedAssetIds));
+
+        var details = new ArkadeAssetPaymentData(outpoint, "BTC", satAmount,
+            IsMismatchedAsset: true,
+            ReceivedTicker: "BTC",
+            ExpectedAssetIds: string.Join(", ", acceptedAssetIds));
+
+        await _paymentLock.WaitAsync(_cts.Token);
+        try
+        {
+            var freshInvoice = await invoiceRepository.GetInvoice(invoice.Id);
+            if (freshInvoice is null) return;
+
+            var paymentData = new PaymentData
+            {
+                Status = PaymentStatus.Unaccounted,
+                Amount = btcAmount,
+                Created = vtxo.CreatedAt,
+                Id = outpoint,
+                Currency = prompt.Currency ?? "ASSET",
+            }.Set(freshInvoice, arkadeAssetPaymentMethodHandler, details);
+
+            var existing = freshInvoice
+                .GetPayments(false)
+                .SingleOrDefault(c => c.Id == paymentData.Id && c.PaymentMethodId == ArkadePlugin.ArkadeAssetPaymentMethodId);
+
+            if (existing == null)
+            {
+                await paymentService.AddPayment(paymentData);
             }
         }
         finally

@@ -1074,9 +1074,9 @@ public class ArkController(
 
             return Json(response);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return Json(new FeeEstimateResponse { Error = ex.Message });
+            return Json(new FeeEstimateResponse { Error = "Failed to estimate fees" });
         }
     }
 
@@ -1120,9 +1120,9 @@ public class ArkController(
                 LnurlMaxSats = parsed.LnurlMaxSats,
             });
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return Json(new ParseDestinationResponse { Error = ex.Message });
+            return Json(new ParseDestinationResponse { Error = "Failed to parse destination" });
         }
     }
 
@@ -1130,6 +1130,7 @@ public class ArkController(
     /// Suggests optimal coin selection based on destination type and amount.
     /// </summary>
     [HttpPost("stores/{storeId}/suggest-coins")]
+    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
     public async Task<IActionResult> SuggestCoins(
         string storeId,
         [FromBody] SuggestCoinsRequest request,
@@ -1221,9 +1222,9 @@ public class ArkController(
 
             return Json(response);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return Json(new SuggestCoinsResponse { Error = ex.Message });
+            return Json(new SuggestCoinsResponse { Error = "Failed to suggest coins" });
         }
     }
 
@@ -1231,6 +1232,7 @@ public class ArkController(
     /// Pre-flight validation before executing spend.
     /// </summary>
     [HttpPost("stores/{storeId}/validate-spend")]
+    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
     public async Task<IActionResult> ValidateSpend(
         string storeId,
         [FromBody] ValidateSpendRequest request,
@@ -2059,7 +2061,20 @@ public class ArkController(
                 $"Warning: asset added but metadata could not be fetched: {ex.Message}";
         }
 
-        assets.Add(new AcceptedAsset(assetId, displayName, mode, pegCurrency.Trim().ToUpperInvariant(), Ticker: ticker, Decimals: decimals));
+        // Validate ticker and pegCurrency are alphanumeric to prevent rate rule injection
+        if (ticker != null && !ticker.All(char.IsLetterOrDigit))
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "Invalid ticker: must be alphanumeric only.";
+            return RedirectToAction(nameof(StoreOverview), new { storeId });
+        }
+        var sanitizedPegCurrency = pegCurrency.Trim().ToUpperInvariant();
+        if (!sanitizedPegCurrency.All(char.IsLetterOrDigit))
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "Invalid peg currency: must be alphanumeric only.";
+            return RedirectToAction(nameof(StoreOverview), new { storeId });
+        }
+
+        assets.Add(new AcceptedAsset(assetId, displayName, mode, sanitizedPegCurrency, Ticker: ticker, Decimals: decimals));
         var newConfig = config with { AcceptedAssets = assets };
         store!.SetPaymentMethodConfig(paymentMethodHandlerDictionary[ArkadePlugin.ArkadePaymentMethodId], newConfig);
 
@@ -3026,9 +3041,9 @@ public class ArkController(
             var (timestamp, height) = await bitcoinTimeChainProvider.GetChainTime(cancellationToken);
             return Json(new { timestamp, height });
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return StatusCode(500, new { error = ex.Message });
+            return StatusCode(500, new { error = "Failed to fetch blockchain info" });
         }
     }
 
