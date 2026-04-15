@@ -4019,7 +4019,7 @@ public class ArkController(
                 result.ResolvedAddress = arkQs;
                 result.AmountSats = amountSats;
                 result.IsValid = true;
-                if (amountSats <= 0)
+                if (amountSats <= 0 && !(result.AssetAmount is > 0))
                     result.Error = "Amount is required";
                 return result;
             }
@@ -4051,7 +4051,7 @@ public class ArkController(
                 result.ResolvedAddress = host;
                 result.AmountSats = amountSats;
                 result.IsValid = true;
-                if (amountSats <= 0)
+                if (amountSats <= 0 && !(result.AssetAmount is > 0))
                     result.Error = "Amount is required";
                 return result;
             }

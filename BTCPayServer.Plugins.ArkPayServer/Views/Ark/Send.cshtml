@@ -143,6 +143,16 @@ else
                     @for (int i = 0; i < Math.Max(1, Model.Outputs.Count); i++)
                     {
                         var output = i < Model.Outputs.Count ? Model.Outputs[i] : new BTCPayServer.Plugins.ArkPayServer.Models.SendOutputViewModel();
+                        var matchedAsset = !string.IsNullOrEmpty(output.AssetId)
+                            ? Model.AvailableAssets.FirstOrDefault(a => a.AssetId == output.AssetId)
+                            : null;
+                        string assetDisplayValue = "";
+                        if (output.AssetAmount > 0 && matchedAsset is not null)
+                        {
+                            var divisor = (decimal)Math.Pow(10, matchedAsset.Decimals);
+                            assetDisplayValue = (output.AssetAmount / divisor).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        }
+                        var assetAmountLocked = output.IsReadonly && output.AssetAmount > 0;
                         <div class="output-row" data-index="@i">
                             @if (output.IsBip21Parsed && !string.IsNullOrEmpty(output.RawBip21))
                             {
@@ -176,7 +186,7 @@ else
                                         <div class="text-danger small mt-1">@output.Error</div>
                                     }
                                 </div>
-                                <div class="col-12 col-md-3">
+                                <div class="col-12 col-md-3 btc-amount-col" style="@(assetAmountLocked ? "display:none" : "")">
                                     <label class="form-label" text-translate="true">Amount (BTC)</label>
                                     <input type="number"
                                            name="Outputs[@i].AmountBtc"
@@ -212,13 +222,15 @@ else
                                         </select>
                                     </div>
                                     <div class="col-12 col-md-5 asset-amount-col" style="@(string.IsNullOrEmpty(output.AssetId) ? "display:none" : "")">
-                                        <label class="form-label text-muted small">Asset Amount <span class="text-danger">*</span></label>
+                                        <label class="form-label text-muted small">Asset Amount @if (!assetAmountLocked) { <span class="text-danger">*</span> }</label>
                                         <input type="number"
                                                class="form-control form-control-sm asset-amount-input"
+                                               value="@assetDisplayValue"
                                                placeholder="Enter amount to send"
                                                step="any"
                                                min="0"
-                                               data-index="@i" />
+                                               data-index="@i"
+                                               @(assetAmountLocked ? "readonly" : "") />
                                         <input type="hidden"
                                                name="Outputs[@i].AssetAmount"
                                                class="asset-amount-atomic"
