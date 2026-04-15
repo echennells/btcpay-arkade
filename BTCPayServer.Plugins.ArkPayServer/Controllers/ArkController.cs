@@ -47,6 +47,7 @@ using NBitcoin.DataEncoders;
 using NBitcoin.Scripting;
 using NBitcoin.Secp256k1;
 using ArkIntent = NArk.Abstractions.Intents.ArkIntent;
+using CreatePullPaymentRequest = BTCPayServer.Client.Models.CreatePullPaymentRequest;
 
 namespace BTCPayServer.Plugins.ArkPayServer.Controllers;
 
@@ -65,6 +66,8 @@ public class ArkController(
     ArkAutomatedPayoutSenderFactory payoutSenderFactory,
     PayoutProcessorService payoutProcessorService,
     PullPaymentHostedService pullPaymentHostedService,
+    InvoiceRepository invoiceRepository,
+    ApplicationDbContextFactory btcpayDbContextFactory,
     EventAggregator eventAggregator,
     IIntentGenerationService intentGenerationService,
     IIntentStorage intentStorage,
@@ -1457,6 +1460,22 @@ public class ArkController(
                     IsLightning = parsed.Type is Send2DestinationType.LightningInvoice or Send2DestinationType.Bip21Lightning,
                     Error = parsed.Error
                 };
+
+                // Resolve asset payout: match ticker to accepted asset
+                if (parsed.AssetTicker is not null && parsed.AssetAmount is > 0 && config?.AcceptedAssets is { Count: > 0 })
+                {
+                    var matchedAsset = config.AcceptedAssets.FirstOrDefault(a =>
+                        string.Equals(a.Ticker, parsed.AssetTicker, StringComparison.OrdinalIgnoreCase));
+                    if (matchedAsset is not null)
+                    {
+                        var decimals = matchedAsset.Decimals ?? 0;
+                        var multiplier = (decimal)Math.Pow(10, decimals);
+                        output.AssetId = matchedAsset.AssetId;
+                        output.AssetAmount = (ulong)(parsed.AssetAmount.Value * multiplier);
+                        output.AmountBtc = null; // Clear BTC amount — this is an asset send
+                    }
+                }
+
                 model.Outputs.Add(output);
             }
         }
@@ -1734,6 +1753,16 @@ public class ArkController(
             {
                 output.Error = "Invalid address format";
                 model.Errors.Add($"Output {i + 1}: Invalid address format");
+                continue;
+            }
+
+            // Asset send: use dust BTC amount + asset metadata
+            if (!string.IsNullOrEmpty(output.AssetId) && output.AssetAmount > 0)
+            {
+                arkOutputs.Add(new ArkTxOut(outputType, serverInfo.Dust, dest)
+                {
+                    Assets = [new ArkTxOutAsset(output.AssetId, output.AssetAmount)]
+                });
                 continue;
             }
 
@@ -3968,8 +3997,16 @@ public class ArkController(
             // Extract payout ID if present (from payout handler redirect)
             result.PayoutId = qs["payout"];
 
-            // Extract amount from BIP21 if not provided
-            if (amountSats == 0 && qs["amount"] is { } amountStr &&
+            // Extract asset info if present (asset payout)
+            result.AssetTicker = qs["assetTicker"];
+            if (qs["assetAmount"] is { } assetAmountStr &&
+                decimal.TryParse(assetAmountStr, System.Globalization.CultureInfo.InvariantCulture, out var assetAmountDec))
+            {
+                result.AssetAmount = assetAmountDec;
+            }
+
+            // Extract amount from BIP21 if not provided (BTC payouts only)
+            if (amountSats == 0 && result.AssetTicker is null && qs["amount"] is { } amountStr &&
                 decimal.TryParse(amountStr, System.Globalization.CultureInfo.InvariantCulture, out var amountDec))
             {
                 amountSats = (long)(amountDec * 100_000_000m);
@@ -4282,6 +4319,107 @@ public class ArkController(
             wallet.WalletDestination = destination;
             await ctx.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    #endregion
+
+    #region Arkade asset refund (bypasses core refund wizard)
+
+    [HttpGet("stores/{storeId}/invoices/{invoiceId}/refund")]
+    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
+    public async Task<IActionResult> ArkadeAssetRefund(string storeId, string invoiceId)
+    {
+        var store = HttpContext.GetStoreData();
+        if (store == null) return NotFound();
+
+        var invoice = await invoiceRepository.GetInvoice(invoiceId);
+        if (invoice == null || invoice.StoreId != storeId) return NotFound();
+
+        var assetPrompt = invoice.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId);
+        if (assetPrompt == null || string.IsNullOrEmpty(assetPrompt.Currency))
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "This invoice is not an Arkade asset invoice.";
+            return RedirectToAction("Invoice", "UIInvoice", new { invoiceId });
+        }
+
+        var config = GetConfig<ArkadePaymentMethodConfig>(ArkadePlugin.ArkadePaymentMethodId, store);
+        var matched = config?.AcceptedAssets?.FirstOrDefault(a =>
+            !string.IsNullOrEmpty(a.Ticker) &&
+            string.Equals(a.Ticker, assetPrompt.Currency, StringComparison.OrdinalIgnoreCase));
+
+        var paid = assetPrompt.Calculate().Paid;
+        var model = new ArkadeAssetRefundViewModel
+        {
+            StoreId = storeId,
+            InvoiceId = invoiceId,
+            Ticker = assetPrompt.Currency,
+            Decimals = matched?.Decimals ?? assetPrompt.Divisibility,
+            PaidAmount = paid,
+            RefundAmount = paid,
+            ReductionPercent = 0m,
+            Description = ""
+        };
+        return View(model);
+    }
+
+    [HttpPost("stores/{storeId}/invoices/{invoiceId}/refund")]
+    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Cookie)]
+    public async Task<IActionResult> ArkadeAssetRefund(string storeId, string invoiceId, ArkadeAssetRefundViewModel model)
+    {
+        var store = HttpContext.GetStoreData();
+        if (store == null) return NotFound();
+
+        var invoice = await invoiceRepository.GetInvoice(invoiceId);
+        if (invoice == null || invoice.StoreId != storeId) return NotFound();
+
+        var assetPrompt = invoice.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId);
+        if (assetPrompt == null || string.IsNullOrEmpty(assetPrompt.Currency))
+        {
+            TempData[WellKnownTempData.ErrorMessage] = "This invoice is not an Arkade asset invoice.";
+            return RedirectToAction("Invoice", "UIInvoice", new { invoiceId });
+        }
+
+        // Re-hydrate display-only fields (don't trust POSTed values)
+        model.StoreId = storeId;
+        model.InvoiceId = invoiceId;
+        model.Ticker = assetPrompt.Currency;
+        model.PaidAmount = assetPrompt.Calculate().Paid;
+
+        if (!ModelState.IsValid)
+        {
+            return View(model);
+        }
+
+        var payoutAmount = model.RefundAmount * (1m - model.ReductionPercent / 100m);
+        if (payoutAmount <= 0)
+        {
+            ModelState.AddModelError(nameof(model.RefundAmount), "Resulting refund after reduction must be positive.");
+            return View(model);
+        }
+
+        var request = new CreatePullPaymentRequest
+        {
+            Name = $"Refund {invoice.Id}",
+            Description = model.Description ?? "",
+            Amount = payoutAmount,
+            Currency = assetPrompt.Currency,
+            PayoutMethods = new[] { ArkadePlugin.ArkadePayoutMethodId.ToString() },
+            AutoApproveClaims = true
+        };
+
+        var ppId = await pullPaymentHostedService.CreatePullPayment(store, request);
+
+        await using (var ctx = btcpayDbContextFactory.CreateContext())
+        {
+            ctx.Refunds.Add(new RefundData
+            {
+                InvoiceDataId = invoice.Id,
+                PullPaymentDataId = ppId
+            });
+            await ctx.SaveChangesAsync();
+        }
+
+        return RedirectToAction("ViewPullPayment", "UIPullPayment", new { pullPaymentId = ppId });
     }
 
     #endregion

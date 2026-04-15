@@ -77,9 +77,6 @@ public class ArkadePlugin : BaseBTCPayServerPlugin
 
         // Boltz swap services (optional)
         RegisterBoltzServices(services, networkConfig);
-
-        // Auto-approve asset payouts that BTCPay can't approve (no BTC rate for store coins)
-        services.AddSingleton<IPluginHookAction, AssetPayoutApprovalHook>();
     }
 
     #region Service Registration
@@ -127,6 +124,9 @@ public class ArkadePlugin : BaseBTCPayServerPlugin
         // Register store coin tickers as recognized currencies
         services.AddSingleton<ArkadeCurrencyDataProvider>();
         services.AddSingleton<CurrencyDataProvider>(sp => sp.GetRequiredService<ArkadeCurrencyDataProvider>());
+
+        // Notification raised when a store-coin refund is cancelled by ArkPayoutHandler.TrackClaim
+        services.AddSingleton<INotificationHandler, Notifications.StoreCoinRefundCancelledNotification.Handler>();
     }
 
     private static void RegisterDatabase(IServiceCollection services)
@@ -227,6 +227,7 @@ public class ArkadePlugin : BaseBTCPayServerPlugin
         services.AddUIExtension("checkout-end", "Arkade/ArkadeAssetMethodCheckout");
         services.AddUIExtension("dashboard-setup-guide-payment", "/Views/Ark/DashboardSetupGuidePayment.cshtml");
         services.AddUIExtension("store-invoices-payments", "/Views/Ark/ArkPaymentData.cshtml");
+        services.AddUIExtension("store-invoices-payments", "/Views/Ark/ArkRefundButtonHider.cshtml");
         services.AddUIExtension("store-wallets-nav", "/Views/Ark/ArkWalletNav.cshtml");
         services.AddUIExtension("ln-payment-method-setup-tab", "/Views/Lightning/LNPaymentMethodSetupTab.cshtml");
         services.AddUIExtension("dashboard", "/Views/Ark/ArkDashboardWidget.cshtml");

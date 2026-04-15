@@ -1,0 +1,80 @@
+@using BTCPayServer.Abstractions.Extensions
+@using BTCPayServer.Data
+@using BTCPayServer.Payments
+@using BTCPayServer.Plugins.ArkPayServer
+@using BTCPayServer.Plugins.ArkPayServer.PaymentHandler
+@using BTCPayServer.Services.Invoices
+@using BTCPayServer.Services.Stores
+@model BTCPayServer.Models.InvoicingModels.InvoiceDetailsModel
+@inject StoreRepository StoreRepository
+@inject PaymentMethodHandlerDictionary HandlerDictionary
+
+@{
+    string? mode = null; // "storecoin" or "stablecoin"
+    string? refundUrl = null;
+
+    var assetPrompt = Model.Entity.GetPaymentPrompt(ArkadePlugin.ArkadeAssetPaymentMethodId);
+    if (assetPrompt is not null && !string.IsNullOrEmpty(assetPrompt.Currency))
+    {
+        var store = await StoreRepository.FindStore(Model.StoreId);
+        var arkConfig = store?.GetPaymentMethodConfig<ArkadePaymentMethodConfig>(
+            ArkadePlugin.ArkadePaymentMethodId,
+            HandlerDictionary,
+            true);
+
+        var matched = arkConfig?.AcceptedAssets?.FirstOrDefault(a =>
+            !string.IsNullOrEmpty(a.Ticker) &&
+            string.Equals(a.Ticker, assetPrompt.Currency, StringComparison.OrdinalIgnoreCase));
+
+        if (matched is { PricingMode: AssetPricingMode.StoreCoin })
+        {
+            mode = "storecoin";
+        }
+        else if (matched is not null)
+        {
+            mode = "stablecoin";
+            refundUrl = Url.Action("ArkadeAssetRefund", "Ark", new
+            {
+                storeId = Model.StoreId,
+                invoiceId = Model.Entity.Id
+            });
+        }
+    }
+}
+
+@if (mode == "storecoin")
+{
+    <script>
+        (function () {
+            if (document.getElementById('arkade-refund-blocked')) return;
+            var btn = document.querySelector('.sticky-header #IssueRefund');
+            if (!btn) return; // not on details page (e.g. invoice list rows)
+            var replacement = document.createElement('button');
+            replacement.id = 'arkade-refund-blocked';
+            replacement.className = 'btn btn-secondary text-nowrap';
+            replacement.disabled = true;
+            replacement.title = 'Store coin invoices cannot be refunded through BTCPay because no BTC exchange rate exists. Issue refunds manually from the Ark wallet.';
+            replacement.textContent = 'Refund unavailable';
+            btn.parentNode.insertBefore(replacement, btn);
+            btn.style.display = 'none';
+        })();
+    </script>
+}
+else if (mode == "stablecoin" && !string.IsNullOrEmpty(refundUrl))
+{
+    <script>
+        (function () {
+            if (document.getElementById('arkade-refund-link')) return;
+            var btn = document.querySelector('.sticky-header #IssueRefund');
+            if (!btn) return;
+            var replacement = document.createElement('a');
+            replacement.id = 'arkade-refund-link';
+            replacement.className = 'btn btn-primary text-nowrap';
+            replacement.href = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(refundUrl));
+            replacement.title = 'Refund this Arkade asset invoice. Bypasses the core refund wizard, which does not handle asset invoices correctly.';
+            replacement.textContent = 'Refund';
+            btn.parentNode.insertBefore(replacement, btn);
+            btn.style.display = 'none';
+        })();
+    </script>
+}

@@ -70,6 +70,10 @@ public class Send2DestinationViewModel
     // Payout tracking (when initiated from payout handler)
     public string? PayoutId { get; set; }
 
+    // Asset payout info (when payout is for a store coin)
+    public string? AssetTicker { get; set; }
+    public decimal? AssetAmount { get; set; }
+
     // LNURL metadata (populated on resolution)
     public long LnurlMinSats { get; set; }
     public long LnurlMaxSats { get; set; }

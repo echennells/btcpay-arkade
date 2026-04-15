@@ -88,9 +88,40 @@ public class ArkPayoutHandler : IPayoutHandler, IHasNetwork, IActiveScriptsProvi
         return !string.IsNullOrWhiteSpace(config?.WalletId) && config.GeneratedByStore;
     }
 
-    public Task TrackClaim(ClaimRequest claimRequest, PayoutData payoutData)
+    public async Task TrackClaim(ClaimRequest claimRequest, PayoutData payoutData)
     {
-        return Task.CompletedTask;
+        // Block store coin payouts — BTCPay core requires a BTC exchange rate for
+        // payout approval, which doesn't exist for store coins (no BTC value).
+        // We cancel the payout immediately so it doesn't get stuck in AwaitingApproval,
+        // then publish a notification so the merchant knows to issue the refund manually.
+        // The UI also blocks the refund button via the ArkRefundButtonHider partial; this
+        // backstop catches direct-URL access (bookmarks, API clients) that bypass the UI.
+        if (payoutData.OriginalCurrency is not null && payoutData.OriginalCurrency != "BTC")
+        {
+            await using var ctx = _dbContextFactory.CreateContext();
+            var store = await ctx.Stores.FindAsync(payoutData.StoreDataId);
+            if (store is not null)
+            {
+                var config = store.GetPaymentMethodConfig<ArkadePaymentMethodConfig>(
+                    ArkadePlugin.ArkadePaymentMethodId, _paymentMethodHandlerDictionary, true);
+                var matchedAsset = config?.AcceptedAssets?.FirstOrDefault(a =>
+                    string.Equals(a.Ticker, payoutData.OriginalCurrency, StringComparison.OrdinalIgnoreCase));
+                if (matchedAsset is { PricingMode: AssetPricingMode.StoreCoin })
+                {
+                    payoutData.State = PayoutState.Cancelled;
+
+                    await _notificationSender.SendNotification(
+                        new StoreScope(payoutData.StoreDataId),
+                        new Notifications.StoreCoinRefundCancelledNotification
+                        {
+                            PayoutId = payoutData.Id,
+                            StoreId = payoutData.StoreDataId,
+                            PaymentMethod = payoutData.PayoutMethodId,
+                            Currency = payoutData.OriginalCurrency
+                        });
+                }
+            }
+        }
     }
 
     public async Task<(IClaimDestination destination, string error)> ParseClaimDestination(string destination,
@@ -251,9 +282,9 @@ public class ArkPayoutHandler : IPayoutHandler, IHasNetwork, IActiveScriptsProvi
             {PayoutState.AwaitingPayment, new List<(string Action, string Text)>()
             {
                 ("reject-payment", "Reject payout transaction")
-                
+
             }},
-            
+
         };
     }
 
@@ -358,21 +389,41 @@ public class ArkPayoutHandler : IPayoutHandler, IHasNetwork, IActiveScriptsProvi
     public async Task<string?> TryGenerateBip21(PayoutData payout, (IClaimDestination destination, string error) claim)
     {
         var terms = await _clientTransport.GetServerInfoAsync();
+
+        // For asset payouts, use OriginalAmount (asset units) instead of Amount (BTC)
+        var isAssetPayout = payout.OriginalCurrency is not null && payout.OriginalCurrency != "BTC";
+        var amount = isAssetPayout ? payout.OriginalAmount : payout.Amount.Value;
+
         switch (claim.destination)
         {
             case ArkUriClaimDestination uriClaimDestination:
-                uriClaimDestination.BitcoinUrl.Amount = new Money(payout.Amount.Value, MoneyUnit.BTC);
+                uriClaimDestination.BitcoinUrl.Amount = isAssetPayout ? null : new Money(amount, MoneyUnit.BTC);
                 var newUri = new UriBuilder(uriClaimDestination.BitcoinUrl.Uri);
                 BTCPayServerClient.AppendPayloadToQuery(newUri,
                     new KeyValuePair<string, object>("payout", payout.Id));
+                if (isAssetPayout)
+                {
+                    BTCPayServerClient.AppendPayloadToQuery(newUri,
+                        new KeyValuePair<string, object>("assetAmount", amount.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                    BTCPayServerClient.AppendPayloadToQuery(newUri,
+                        new KeyValuePair<string, object>("assetTicker", payout.OriginalCurrency));
+                }
                 return newUri.Uri.ToString();
             case ArkAddressClaimDestination addressClaimDestination:
                 var builder = new PaymentUrlBuilder("bitcoin")
                 {
                     Host = addressClaimDestination.Address.ToString(terms.Network.ChainName == ChainName.Mainnet)
                 };
-                builder.QueryParams.Add("amount", payout.Amount.Value.ToString());
                 builder.QueryParams.Add("payout", payout.Id);
+                if (isAssetPayout)
+                {
+                    builder.QueryParams.Add("assetAmount", amount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    builder.QueryParams.Add("assetTicker", payout.OriginalCurrency);
+                }
+                else
+                {
+                    builder.QueryParams.Add("amount", amount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
                 return builder.ToString();
             default:
                 return null;
